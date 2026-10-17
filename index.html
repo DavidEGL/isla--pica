@@ -1,0 +1,165 @@
+<!doctype html>
+<html lang="es">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1, user-scalable=no, viewport-fit=cover">
+<title>Epic Adventures — Epic Island</title>
+<meta name="description" content="Aventura educativa 3D de EpicGroup Lab. Explora Epic Island, conoce a Neuri-X y completa la misión NeuroAventura.">
+<meta name="theme-color" content="#0b1b3a">
+<meta property="og:title" content="Epic Adventures — Epic Island">
+<meta property="og:description" content="Aventura educativa 3D de EpicGroup Lab: explora Epic Island, conoce a Neuri-X y completa la misión NeuroAventura.">
+<meta property="og:image" content="https://epic-land.higgsfield.app/cover.jpg">
+<meta property="og:type" content="website">
+<meta name="twitter:card" content="summary_large_image">
+<link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 64 64'%3E%3Ccircle cx='32' cy='32' r='30' fill='%230b1b3a'/%3E%3Cpath d='M32 10 L50 32 L32 54 L14 32 Z' fill='%2335e0ff'/%3E%3C/svg%3E">
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Nunito:wght@600;800;900&family=Baloo+2:wght@700;800&display=swap" rel="stylesheet">
+<link rel="stylesheet" href="./css/style.css">
+<script type="importmap">
+{ "imports": {
+  "three": "./vendor/three/build/three.module.min.js",
+  "three/addons/": "./vendor/three/examples/jsm/"
+} }
+</script>
+</head>
+<body>
+<div id="app">
+  <div id="hud" class="hidden">
+    <div id="objective" class="glass">
+      <div class="obj-head">
+        <div class="obj-ico"><svg viewBox="0 0 48 48" aria-hidden="true"><g fill="none" stroke="currentColor" stroke-width="2.6" stroke-linecap="round" stroke-linejoin="round"><path d="M22 8c-4-2-9 0-10 4-4 0-7 4-6 8-3 2-3 7 0 9-1 4 2 8 6 8 1 4 6 5 10 3z"/><path d="M26 8c4-2 9 0 10 4 4 0 7 4 6 8 3 2 3 7 0 9 1 4-2 8-6 8-1 4-6 5-10 3z"/><path d="M24 8v32M14 18c3 0 5 2 5 5M34 18c-3 0-5 2-5 5M13 30c3-1 6 0 7 3M35 30c-3-1-6 0-7 3"/></g></svg></div>
+        <div class="obj-titles"><div class="obj-tag">MISIÓN ACTIVA</div><div id="obj-text">Explora Epic Island</div></div>
+      </div>
+      <div id="obj-sub"></div>
+      <ul id="obj-steps"></ul>
+    </div>
+    <div id="profile" class="glass">
+      <div class="pf-top">
+        <div class="pf-face"><canvas id="pf-face" width="160" height="160"></canvas></div>
+        <div class="pf-main">
+          <div class="pf-name">Explorador</div>
+          <div class="pf-lvl">Nivel <b id="st-lvl">1</b></div>
+          <div class="pf-bar"><i id="st-xpbar"></i></div>
+          <div class="pf-xp" id="st-xp">0 / 250 EXP</div>
+        </div>
+        <button class="pf-gear" id="btn-gear" aria-label="Pausa"><svg viewBox="0 0 24 24"><path fill="currentColor" d="M19.4 13a7.6 7.6 0 0 0 0-2l2.1-1.6-2-3.5-2.5 1a7.5 7.5 0 0 0-1.7-1L15 3.3h-4l-.3 2.6a7.5 7.5 0 0 0-1.7 1l-2.5-1-2 3.5L6.6 11a7.6 7.6 0 0 0 0 2l-2.1 1.6 2 3.5 2.5-1a7.5 7.5 0 0 0 1.7 1l.3 2.6h4l.3-2.6a7.5 7.5 0 0 0 1.7-1l2.5 1 2-3.5zM13 15.5A3.5 3.5 0 1 1 13 8.5a3.5 3.5 0 0 1 0 7z"/></svg></button>
+      </div>
+      <div class="pf-row">
+        <div class="stat" title="Cristales de energía"><span class="ico crystal"></span><b id="st-crystals">0</b><small id="st-crystals-of">/40</small></div>
+        <div class="parts" id="st-parts" title="Piezas de la neurona">
+          <span data-part="soma" title="Soma">S</span><span data-part="axon" title="Axón">A</span><span data-part="sinapsis" title="Sinapsis">Si</span><span data-part="dendritas" title="Dendritas">D</span>
+        </div>
+      </div>
+    </div>
+    <div id="mapzone">
+      <div id="minimap"><canvas id="mm" width="340" height="340"></canvas><span class="mm-n">N</span></div>
+      <div id="zone" class="glass"><b id="zone-name">Epic Island</b><small id="zone-sub">Laboratorio EpicGroup</small></div>
+    </div>
+    <div id="actions">
+      <button class="act-btn" id="ab-inv"><svg viewBox="0 0 48 48"><g fill="none" stroke="currentColor" stroke-width="3" stroke-linejoin="round"><path d="M14 18a10 10 0 0 1 20 0v22a2 2 0 0 1-2 2H16a2 2 0 0 1-2-2z"/><path d="M19 9a5 5 0 0 1 10 0M14 26h20M20 26v5h8v-5"/></g></svg><span>Inventario</span><kbd>I</kbd></button>
+      <button class="act-btn" id="ab-map"><svg viewBox="0 0 48 48"><path fill="none" stroke="currentColor" stroke-width="3" stroke-linejoin="round" d="M24 44s13-12.4 13-23a13 13 0 0 0-26 0c0 10.6 13 23 13 23z"/><circle cx="24" cy="21" r="5" fill="none" stroke="currentColor" stroke-width="3"/></svg><span>Mapa</span><kbd>M</kbd></button>
+      <button class="act-btn" id="ab-ach"><svg viewBox="0 0 48 48"><g fill="none" stroke="currentColor" stroke-width="3" stroke-linejoin="round"><path d="M15 8h18v10a9 9 0 0 1-18 0z"/><path d="M15 12H8c0 6 3 9 7 9M33 12h7c0 6-3 9-7 9M24 27v8M16 41h16M19 35h10v6H19z"/></g></svg><span>Logros</span><kbd>L</kbd></button>
+      <button class="act-btn" id="ab-hint"><svg viewBox="0 0 48 48"><g fill="none" stroke="currentColor" stroke-width="3" stroke-linecap="round" stroke-linejoin="round"><path d="M17 31c-3-3-5-6-5-11a12 12 0 0 1 24 0c0 5-2 8-5 11v4H17z"/><path d="M19 41h10"/></g></svg><span>Pistas</span><kbd>H</kbd></button>
+    </div>
+    <div id="hintbar" class="bar hidden"><canvas class="nx-face" width="128" height="128"></canvas><span id="hint-text"></span></div>
+    <div id="prompt" class="bar hidden"><canvas class="nx-face" width="128" height="128"></canvas><span>Pulsa</span><span class="key" id="prompt-key">E</span><span id="prompt-text">Interactuar</span></div>
+    <div id="timer" class="hidden"></div>
+    <div id="toasts"></div>
+    <div id="dialog" class="hidden">
+      <div class="dlg-face-wrap"><canvas id="dlg-face" width="128" height="128"></canvas></div>
+      <div class="dlg-body">
+        <div class="dlg-name"><svg viewBox="0 0 24 24" aria-hidden="true"><path fill="currentColor" d="M4 4h4l4 6 4-6h4l-6 8 6 8h-4l-4-6-4 6H4l6-8z"/></svg>Neuri-X</div>
+        <div id="dlg-text"></div>
+        <div class="dlg-next" id="dlg-next">▸</div>
+      </div>
+      <div id="dlg-choices"></div>
+    </div>
+    <div id="center-msg" class="hidden"></div>
+    <button id="btn-pause" class="icon-btn" aria-label="Pausa">❚❚</button>
+  </div>
+
+  <div id="achv" class="hidden"><div class="panel achv-panel"><div class="c-tag">TUS LOGROS</div><h2 id="achv-title">Logros</h2><div class="achv-grid" id="achv-grid"></div><div class="small">Pulsa <b>L</b> o toca para cerrar</div></div></div>
+
+  <div id="touch-ui">
+    <div id="look-zone"></div>
+    <div id="stick"><div id="stick-knob"></div></div>
+    <div id="touch-btns">
+      <button id="btn-act" class="tbtn act">E</button>
+      <button id="btn-jump" class="tbtn jump">⤒</button>
+      <button id="btn-dash" class="tbtn dash">»</button>
+      <button id="btn-sprint" class="tbtn sprint">⚡</button>
+    </div>
+  </div>
+
+  <div id="loading">
+    <div class="logo"><span class="l1">EPIC</span><span class="l2">ADVENTURES</span><span class="l3">I S L A N D</span></div>
+    <div class="load-bar"><i id="load-fill"></i></div>
+    <div id="load-text">Cargando la isla…</div>
+  </div>
+
+  <div id="title" class="hidden">
+    <div class="title-card">
+      <div class="logo big"><span class="l1">EPIC</span><span class="l2">ADVENTURES</span><span class="l3">I S L A N D</span></div>
+      <div class="tagline">EXPLORA · APRENDE · CREA</div>
+      <div class="title-btns">
+        <button id="btn-play" class="btn primary">JUGAR</button>
+        <button class="btn vr btn-vr hidden">🥽 JUGAR EN VR</button>
+        <button id="btn-new" class="btn ghost hidden">Nueva partida</button>
+      </div>
+      <div class="controls-help" id="controls-help">
+        <div><kbd>W</kbd><kbd>A</kbd><kbd>S</kbd><kbd>D</kbd> Moverse</div>
+        <div><kbd>Ratón</kbd> Cámara</div>
+        <div><kbd>Espacio</kbd> Saltar</div>
+        <div><kbd>Shift</kbd> Correr</div>
+        <div><kbd>E</kbd> Interactuar</div>
+        <div><kbd>Q</kbd> Impulso</div>
+        <div><kbd>M</kbd> Mapa</div>
+        <div><kbd>Esc</kbd> Pausa</div>
+        <div class="pad-hint">🎮 Compatible con mando</div>
+      </div>
+      <div class="q-row">Calidad gráfica:
+        <select id="title-quality"><option value="low">Baja</option><option value="medium">Media</option><option value="high">Alta</option></select>
+      </div>
+      <div class="brand">Una experiencia de <b>EpicGroup Lab</b></div>
+    </div>
+  </div>
+
+  <div id="pause" class="hidden">
+    <div class="panel">
+      <h2>Pausa</h2>
+      <button id="p-resume" class="btn primary">Continuar</button>
+      <button class="btn vr btn-vr hidden">🥽 Entrar en VR</button>
+      <label class="row">Calidad gráfica
+        <select id="p-quality"><option value="low">Baja</option><option value="medium">Media</option><option value="high">Alta</option></select></label>
+      <label class="row">Sensibilidad de cámara <input id="p-sens" type="range" min="0.3" max="2.2" step="0.1" value="1"></label>
+      <label class="row">Invertir eje vertical <input id="p-invert" type="checkbox"></label>
+      <label class="row">Sonido <input id="p-sound" type="checkbox" checked></label>
+      <label class="row">Voz de Neuri-X <input id="p-voice" type="checkbox" checked></label>
+      <div class="row small" id="p-fps"></div>
+      <button id="p-map" class="btn ghost">Ver mapa</button>
+      <button id="p-home" class="btn ghost">Volver a la Plaza Central</button>
+      <button id="p-reset" class="btn danger">Reiniciar progreso</button>
+      <div id="p-reset-confirm" class="hidden confirm">¿Seguro? Se borrarán cristales y misiones. <button id="p-reset-yes" class="btn danger sm">Sí, reiniciar</button> <button id="p-reset-no" class="btn ghost sm">Cancelar</button></div>
+    </div>
+  </div>
+
+  <div id="mapfull" class="hidden"><div class="panel map-panel"><h2>Mapa de Epic Island</h2><canvas id="bigmap" width="900" height="900"></canvas><div class="map-legend" id="map-legend"></div><div class="small">Pulsa <b>M</b> o toca para cerrar</div></div></div>
+
+  <div id="complete" class="hidden">
+    <div class="panel complete-panel">
+      <div class="badge"><div class="badge-in"><svg viewBox="0 0 120 120" aria-hidden="true"><circle cx="60" cy="60" r="12" fill="#fff"/><g stroke="#fff" stroke-width="6" stroke-linecap="round" fill="none"><path d="M60 48 Q55 30 40 22"/><path d="M60 48 Q70 30 82 24"/><path d="M50 62 Q34 62 24 52"/><path d="M60 72 L60 100"/><path d="M60 100 L48 108 M60 100 L72 108"/><path d="M70 62 Q86 60 96 50"/></g></svg></div></div>
+      <div class="c-tag">MISIÓN COMPLETADA</div>
+      <h2>NeuroAventura — Señal Vital</h2>
+      <p>Insignia desbloqueada: <b>Guardián Neuronal</b></p>
+      <div class="c-stats" id="c-stats"></div>
+      <button id="c-continue" class="btn primary">Seguir explorando</button>
+    </div>
+  </div>
+
+  <div id="rotate-hint"><div>↻</div>Gira tu tableta en horizontal para jugar</div>
+  <div id="flash"></div>
+</div>
+<script type="module" src="./js/main.js"></script>
+</body>
+</html>
