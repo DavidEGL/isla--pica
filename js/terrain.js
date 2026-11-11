@@ -129,6 +129,32 @@ export function heightAt(x, z) {
   return h;
 }
 
+// Malla del terreno: rejilla de TERRAIN_SEG celdas con la misma diagonal que PlaneGeometry.
+export const TERRAIN_SEG = 260;
+let meshHeights = null;
+function terrainTable() {
+  if (meshHeights) return meshHeights;
+  const n = TERRAIN_SEG + 1, step = WORLD / TERRAIN_SEG;
+  meshHeights = new Float32Array(n * n);
+  for (let j = 0; j < n; j++) for (let i = 0; i < n; i++) meshHeights[j * n + i] = heightAt(-WORLD / 2 + i * step, -WORLD / 2 + j * step);
+  return meshHeights;
+}
+// Altura del suelo tal como se dibuja: es lo que pisa el jugador, para que los pies coincidan con lo que se ve.
+export function surfaceAt(x, z) {
+  const t = terrainTable(), n = TERRAIN_SEG + 1, step = WORLD / TERRAIN_SEG;
+  const u = (x + WORLD / 2) / step, v = (z + WORLD / 2) / step;
+  const i = Math.min(TERRAIN_SEG - 1, Math.max(0, Math.floor(u))), j = Math.min(TERRAIN_SEG - 1, Math.max(0, Math.floor(v)));
+  const fu = u - i, fv = v - j;
+  const a = t[j * n + i], b = t[(j + 1) * n + i], c = t[(j + 1) * n + i + 1], d = t[j * n + i + 1];
+  return fu + fv <= 1 ? a + (d - a) * fu + (b - a) * fv : c + (b - c) * (1 - fu) + (d - c) * (1 - fv);
+}
+export function surfaceSlopeAt(x, z) {
+  const e = 0.6;
+  const dx = (surfaceAt(x + e, z) - surfaceAt(x - e, z)) / (2 * e);
+  const dz = (surfaceAt(x, z + e) - surfaceAt(x, z - e)) / (2 * e);
+  return { dx, dz, m: Math.hypot(dx, dz) };
+}
+
 export function slopeAt(x, z) {
   const e = 0.6;
   const dx = (heightAt(x + e, z) - heightAt(x - e, z)) / (2 * e);

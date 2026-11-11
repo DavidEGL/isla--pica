@@ -8,7 +8,7 @@ import { MATH } from './mathdata.js';
 import { buildBrain } from './neuroparts.js';
 import { makeSign, softSpriteTexture, roundRect, damp } from './util.js';
 import { labelSprite, LABELS } from './mission.js';
-import { Portal, portalMaterial, fadePortal } from './portals.js';
+import { Portal, ringPortal, addRingColliders, fadePortal } from './portals.js';
 import { SKY, pearlMat, silverMat, goldMat, lightMat, floorDisk, rectFloorTexture, skyDome, floatingIslands, planter, sloganPanel, glassCapsule } from './labstyle.js';
 
 export const ARENA = { x: 700, y: 60, z: 0 };            // world origin of the interior (far from the island)
@@ -17,7 +17,6 @@ export const ARCADE_DOOR = { x: -109, z: 16, y: N.h };   // portal in the Neuro 
 export const ARCADE_RETURN = { x: -100.5, z: 16, yaw: Math.PI / 2 };
 const HUB_R = 22, GATE_R = 16.5, EXIT_Z = 19.4;   // roomier hub: gates ~10 m apart
 const HUB_SPAWN = { x: 0, z: 12, yaw: Math.PI };
-const GAP = 0.62;
 const PHASE_NAMES = ['APRENDE', 'PRACTICA', 'RETO VELOZ'];
 // Sala de Matemáticas door in the STEAM district (faces the plaza)
 export const STEAM_DOOR = { x: STEAM_GEO.door.x, z: STEAM_GEO.door.z, y: PADS.steam.h, rot: STEAM_GEO.rot };
@@ -101,27 +100,6 @@ const $ = (id) => document.getElementById(id);
 const _l = new THREE.Vector3(), _v = new THREE.Vector3();
 
 // ------------------------------------------------------------------ shared props
-function ringPortal(color, R) {
-  const g = new THREE.Group();
-  const arc = Math.PI * 2 - GAP * 2;
-  const ring = new THREE.Mesh(new THREE.TorusGeometry(R, 0.3, 12, 72, arc), new THREE.MeshStandardMaterial({ color: 0xffffff, roughness: 0.35, metalness: 0.15 }));
-  ring.rotation.z = -Math.PI / 2 + GAP;
-  const glowMat = new THREE.MeshBasicMaterial({ color, toneMapped: false });
-  const glow = new THREE.Mesh(new THREE.TorusGeometry(R - 0.32, 0.08, 6, 72, arc), glowMat);
-  glow.rotation.z = ring.rotation.z;
-  const mat = portalMaterial(color, { shape: 'circle', color2: 0xffffff });
-  const disc = new THREE.Mesh(new THREE.CircleGeometry(R - 0.26, 56), mat);
-  disc.renderOrder = 4;
-  g.add(ring, glow, disc);
-  for (const s of [-1, 1]) {
-    const cap = new THREE.Mesh(new THREE.SphereGeometry(0.38, 14, 10), new THREE.MeshStandardMaterial({ color: 0xffffff, roughness: 0.35 }));
-    cap.position.set(s * R * Math.sin(GAP), -R * Math.cos(GAP), 0);
-    g.add(cap);
-  }
-  Object.assign(g.userData, { mat, glowMat, lift: R * Math.cos(GAP), half: R * Math.sin(GAP) });
-  return g;
-}
-
 function ringPad(color, r = 1.6) {
   const g = new THREE.Group();
   const base = new THREE.Mesh(new THREE.CylinderGeometry(r, r + 0.15, 0.24, 36), new THREE.MeshStandardMaterial({ color: 0xf1f5f8, roughness: 0.4 }));
@@ -289,8 +267,8 @@ class Level {
     this.g.add(ex);
     this.exitMat = ex.userData.mat;
     const nx = Math.sin(E.rot), nz = Math.cos(E.rot);
-    for (const s of [-1, 1]) this.circle(E.x + nz * s * ex.userData.half, E.z - nx * s * ex.userData.half, 0.4, -1, 5);
     const [wx, wz] = this.W(E.x, E.z);
+    addRingColliders(this.A.col, ex, wx, wz, E.rot, ARENA.y, 'arcade');
     this.exitPortal = new Portal({ x: wx, z: wz, nx, nz, halfW: ex.userData.half - 0.3, y0: ARENA.y - 1, y1: ARENA.y + 3, twoSided: true });
     const lab = labelSprite(['SALIR', SETS[this.def.set || 'neuro'].hall], '#22c55e', 2.4);
     lab.position.set(E.x, 4.6, E.z);
@@ -1855,7 +1833,7 @@ export class Arcade {
     ex.position.set(0, ex.userData.lift, EXIT_Z);
     H.add(ex);
     this.hubExitMat = ex.userData.mat;
-    for (const s of [-1, 1]) this._hubCircle(s * ex.userData.half, EXIT_Z, 0.4, -1, 5);
+    addRingColliders(this.col, ex, ARENA.x, ARENA.z + EXIT_Z, 0, ARENA.y, 'arcade');
     this.hubExit = new Portal({ x: ARENA.x, z: ARENA.z + EXIT_Z, nx: 0, nz: 1, halfW: ex.userData.half - 0.3, y0: ARENA.y - 1, y1: ARENA.y + 3, twoSided: true });
     // mode platform (Explorador / Desafío), left of the spawn
     this.modePad = { x: -4.8, z: 11.5 };
@@ -1896,14 +1874,14 @@ export class Arcade {
       ring.rotation.y = th;
       D.add(ring);
       const nx = Math.sin(th), nz = Math.cos(th);
-      for (const s of [-1, 1]) this._hubCircle(x + nz * s * ring.userData.half, z - nx * s * ring.userData.half, 0.4, -1, 5);
+      addRingColliders(this.col, ring, ARENA.x + x, ARENA.z + z, th, ARENA.y, 'arcade');
       const portal = new Portal({ x: ARENA.x + x, z: ARENA.z + z, nx, nz, halfW: ring.userData.half - 0.3, y0: ARENA.y - 1, y1: ARENA.y + 3, twoSided: true });
       const head = d.tag || (d.key === 'final' ? 'NIVEL FINAL' : `NIVEL ${d.n}`);
       const sign = labelSprite([head, d.name], hex(d.color), 3.4, d.emoji);
-      sign.position.set(x, 6.3, z);
+      sign.position.set(x, 6.7, z);
       D.add(sign);
       const stars = canvasSprite(starsCanvas(0, '', hex(d.color)), 2.6);
-      stars.position.set(x, 4.85, z);
+      stars.position.set(x, 5.3, z);
       D.add(stars);
       const lock = labelSprite([d.soon ? 'PRÓXIMAMENTE' : 'BLOQUEADO'], '#9aa6c8', 2.2, '🔒');
       lock.position.set(x, 2.0, z);
@@ -1979,10 +1957,11 @@ export class Arcade {
     g.rotation.y = rot;
     this.scene.add(g);
     const nx = Math.sin(rot), nz = Math.cos(rot);
-    for (const s of [-1, 1]) this.col.addCircle(E.x + nz * s * g.userData.half, E.z - nx * s * g.userData.half, 0.45, E.y - 1, E.y + 6, 'arcdoor');
+    addRingColliders(this.col, g, E.x, E.z, rot, E.y, 'arcdoor');
     const floorRing = new THREE.Mesh(new THREE.TorusGeometry(4.2, 0.12, 6, 64), glowMat(col, 1.8));
     floorRing.rotation.x = Math.PI / 2;
-    floorRing.position.set(E.x, E.y + 0.06, E.z);
+    floorRing.scale.z = 0.14; // aro plano: se pisa sin que atraviese los pies
+    floorRing.position.set(E.x, E.y + 0.14, E.z); // sobre la base del portal
     this.scene.add(floorRing);
     const trophy = new THREE.Group();
     const st = new THREE.Mesh(new THREE.OctahedronGeometry(1.3, 0), new THREE.MeshStandardMaterial({ color: cfg.key === 'math' ? 0xc7b8f5 : 0xffd36b, emissive: cfg.key === 'math' ? 0x8b5cf6 : 0xffa000, emissiveIntensity: 1.4, roughness: 0.2, flatShading: true }));
@@ -2002,10 +1981,10 @@ export class Arcade {
         trophy.add(sp);
       });
     }
-    trophy.position.set(E.x, E.y + 8.2, E.z);
+    trophy.position.set(E.x, E.y + 9.0, E.z);
     this.scene.add(trophy);
     const sign = makeSign(cfg.sign, 6.6, 1.65, { border: hex(col), sub: '#e9ddff' });
-    sign.position.set(E.x, E.y + 11.2, E.z);
+    sign.position.set(E.x, E.y + 12.0, E.z);
     sign.rotation.y = rot;
     this.scene.add(sign);
     const entrance = new Portal({ x: E.x, z: E.z, nx, nz, halfW: g.userData.half - 0.35, y0: E.y - 1, y1: E.y + 3, twoSided: true });
@@ -2627,7 +2606,7 @@ export class Arcade {
       st.doorMat.uniforms.time.value = t;
       if (cam) fadePortal(st.doorMat, D.x, D.z, cam);
       st.trophy.rotation.y = t * 0.5;
-      st.trophy.position.y = D.y + 8.2 + Math.sin(t * 1.3) * 0.25;
+      st.trophy.position.y = D.y + 9.0 + Math.sin(t * 1.3) * 0.25;
     }
     // smooth score counter
     if (this.shownPts !== this.pts) {

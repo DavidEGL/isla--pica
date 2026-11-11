@@ -9,7 +9,7 @@ import {
 } from './world.js';
 import { STEAM_GEO } from './districts.js';
 import { buildDistricts } from './districts.js';
-import { Avatar, Player } from './player.js';
+import { Avatar, Player, swimClipsFrom } from './player.js';
 import { FollowCam } from './camera.js';
 import { Input } from './input.js';
 import { NeuriX } from './neurix.js';
@@ -78,15 +78,25 @@ function applyQuality(q) {
     }
   }
   if (G.veg) G.veg.setDensity(q === 'low' ? 0.45 : q === 'medium' ? 0.8 : 1);
+  if (G.districts) G.districts.setBannerWave(q !== 'low');
   if (!(G.lab && G.lab.inside) && !(G.arcade && G.arcade.inside)) scene.fog.density = q === 'low' ? 0.0028 : 0.0021;
   camera.far = q === 'low' ? 900 : 2000;
   camera.updateProjectionMatrix();
   save.persist();
 }
+// Tamaño del HUD: automático según la ventana (1920×1080 = 100 %) o el porcentaje elegido en Pausa.
+// En pantallas táctiles el automático no reduce, porque ya están ajustadas a su tamaño.
+function applyUiScale() {
+  const pick = settings.uiScale || 'auto';
+  const floor = matchMedia('(pointer: coarse)').matches ? 1 : 0.8;
+  const auto = Math.min(2.5, Math.max(floor, Math.min(innerWidth / 1920, innerHeight / 1080)));
+  document.documentElement.style.setProperty('--ui-scale', pick === 'auto' ? auto : +pick);
+}
 function onResize() {
   renderer.setSize(innerWidth, innerHeight);
   camera.aspect = innerWidth / innerHeight;
   camera.updateProjectionMatrix();
+  applyUiScale();
 }
 addEventListener('resize', onResize);
 onResize();
@@ -116,6 +126,7 @@ async function loadAssets() {
     ['b1', base + kc + 'building-small-a.glb'], ['b2', base + kc + 'building-small-b.glb'],
     ['b3', base + kc + 'building-small-c.glb'], ['b4', base + kc + 'building-small-d.glb'],
     ['b5', base + kc + 'building-garage.glb'],
+    ['palm', base + 'palma.glb'],
   ];
   const out = {};
   let i = 0;
@@ -124,15 +135,16 @@ async function loadAssets() {
     setLoad(0.08 + (++i / want.length) * 0.22, 'Construyendo los distritos…');
   }
   // avatar: generated model, then fallback
-  const avatarUrl = params.get('avatar') ? base + params.get('avatar') : base + 'avatar.glb';
+  const avatarUrl = params.get('avatar') ? base + params.get('avatar') : base + 'boy.glb';
   setLoad(0.32, 'Preparando a tu explorador…');
   let av = await loadGLB(avatarUrl);
   if (av && params.get('clips')) {
     const keep = params.get('clips').split(',');
     av.animations = av.animations.filter((a) => keep.includes(a.name));
   }
-  if (!av) av = await loadGLB(base + 'avatar.glb'); // retry: always our own Epic avatar
+  if (!av) av = await loadGLB(base + 'boy.glb'); // retry: always our own Epic avatar
   out.avatar = av;
+  out.swim = await fetch(base + 'swim_clips.json').then((r) => (r.ok ? r.json() : null)).catch(() => null);
   return out;
 }
 
@@ -215,7 +227,7 @@ async function boot() {
   G.falls = buildWaterfalls(scene);
   setLoad(0.58, 'Plantando la selva…');
   await nextFrame();
-  G.veg = buildVegetation(scene, G.colliders, quality);
+  G.veg = buildVegetation(scene, G.colliders, quality, assets.palm);
   G.bridge = buildBridge(scene, G.colliders);
   // kenney helpers
   const kenney = {};
@@ -255,6 +267,7 @@ async function boot() {
   G.input = new Input(renderer.domElement, G.ui);
   G.input.sensitivity = settings.sens || 1;
   G.input.invertY = !!settings.invertY;
+  if (assets.swim) assets.avatar.animations.push(...swimClipsFrom(assets.swim, assets.avatar.scene));
   const avatar = new Avatar(assets.avatar, { height: 1.5 });
   G.avatar = avatar;
   G.player = new Player(scene, G.colliders, avatar, G.audio, softSpriteTexture('rgba(255,248,230,0.9)', 'rgba(255,248,230,0)'));
@@ -614,6 +627,7 @@ function setPause(on) {
   $('pause').classList.toggle('hidden', !on);
   if (on) {
     $('p-quality').value = quality;
+    $('p-ui').value = settings.uiScale || 'auto';
     $('p-sens').value = G.input.sensitivity;
     $('p-invert').checked = G.input.invertY;
     $('p-sound').checked = !G.audio.muted;
@@ -650,6 +664,7 @@ function setupMenus() {
   $('title-quality').addEventListener('change', (e) => { const q = e.target.value; const needReload = (q === 'low') !== (quality === 'low'); applyQuality(q); if (needReload) location.reload(); });
   $('p-resume').addEventListener('click', () => setPause(false));
   $('p-quality').addEventListener('change', (e) => applyQuality(e.target.value));
+  $('p-ui').addEventListener('change', (e) => { settings.uiScale = e.target.value; applyUiScale(); save.persist(); });
   $('p-sens').addEventListener('input', (e) => { G.input.sensitivity = +e.target.value; settings.sens = +e.target.value; save.persist(); });
   $('p-invert').addEventListener('change', (e) => { G.input.invertY = e.target.checked; settings.invertY = e.target.checked; save.persist(); });
   $('p-sound').addEventListener('change', (e) => { G.audio.setMuted(!e.target.checked); settings.sound = e.target.checked; if (!e.target.checked) G.voice.stop(); save.persist(); });

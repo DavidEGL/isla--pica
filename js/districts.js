@@ -1,7 +1,10 @@
 // Plaza Central + 4 districts (Neuro playable, others "Próximamente")
 import * as THREE from 'three';
+import { mergeGeometries } from 'three/addons/utils/BufferGeometryUtils.js';
 import { PADS, heightAt, SPAWN } from './terrain.js';
 import { makeSign, textTexture, mulberry32, softSpriteTexture, bakeStatic } from './util.js';
+import { gateArchFrame, addGateArchColliders, PORTAL_MATS, facetedCyl } from './labstyle.js';
+import { meshShape } from './colliders.js';
 
 // STEAM district geometry shared with the Sala de Matemáticas (door faces the plaza)
 export const STEAM_GEO = (() => {
@@ -113,26 +116,13 @@ function floorDisk(pad, tex, r = pad.r - 1) {
   m.receiveShadow = true;
   const rim = new THREE.Mesh(new THREE.TorusGeometry(r, 0.25, 6, 96), white());
   rim.rotation.x = Math.PI / 2;
-  rim.position.set(pad.x, pad.h + 0.08, pad.z);
+  rim.scale.z = 0.14;
+  rim.position.set(pad.x, pad.h + 0.04, pad.z);
   return [m, rim];
 }
 
 function arch(color, title, subtitle, colliders, x, z, rotY, baseY, width = 8) {
-  const g = new THREE.Group();
-  const pillarMat = white();
-  const glow = emissive(color, 1.4);
-  for (const s of [-1, 1]) {
-    const p = new THREE.Mesh(new THREE.BoxGeometry(1.1, 7.5, 1.1), pillarMat);
-    p.position.set(s * width / 2, 3.75, 0);
-    p.castShadow = true;
-    const strip = new THREE.Mesh(new THREE.BoxGeometry(0.18, 6.4, 1.14), glow);
-    strip.position.set(s * (width / 2 - 0.47), 3.6, 0);
-    g.add(p, strip);
-  }
-  const beam = new THREE.Mesh(new THREE.BoxGeometry(width + 1.6, 1.1, 1.3), pillarMat);
-  beam.position.y = 7.9;
-  beam.castShadow = true;
-  g.add(beam);
+  const g = gateArchFrame(emissive(color, 1.4), width);
   const sign = makeSign([title, subtitle], width + 0.6, (width + 0.6) / 4, {
     border: '#' + new THREE.Color(color).getHexString(), sub: '#ffffff', bg: 'rgba(10,24,48,0.92)',
   });
@@ -140,50 +130,100 @@ function arch(color, title, subtitle, colliders, x, z, rotY, baseY, width = 8) {
   g.add(sign);
   g.position.set(x, baseY, z);
   g.rotation.y = rotY;
-  // colliders for pillars
-  for (const s of [-1, 1]) {
-    const wx = x + Math.cos(rotY) * s * width / 2, wz = z - Math.sin(rotY) * s * width / 2;
-    colliders.addCircle(wx, wz, 0.8, baseY - 1, baseY + 8, 'arch');
+  addGateArchColliders(colliders, x, z, rotY, baseY, width, 'arch');
+  return g;
+}
+
+// perfiles [radio, altura] de la farola, de abajo hacia arriba
+const LAMP_BODY = [[0.34, 0], [0.34, 0.12], [0.26, 0.3], [0.22, 0.42], [0.18, 1.55], [0.2, 1.62], [0.1, 1.8], [0.075, 1.9], [0.07, 3.75], [0.11, 3.9], [0.1, 3.98], [0.22, 4.02], [0.22, 4.05]];
+const LAMP_ROOF = [[0, 4.62], [0.26, 4.62], [0.38, 4.7], [0.34, 4.82], [0.2, 4.92], [0.07, 4.98], [0.05, 5.0], [0.09, 5.06], [0, 5.2]];
+const lathe8 = (profile) => new THREE.LatheGeometry(profile.map(([r, y]) => new THREE.Vector2(r, y)), 8);
+
+// Farola facetada de 8 lados: base y poste, linterna luminosa con marco, y techo con remate
+function lampPost(color = 0x35e0ff) {
+  const g = new THREE.Group();
+  const frame = new THREE.MeshStandardMaterial({ color: 0x24324a, metalness: 0.5, roughness: 0.4, flatShading: true });
+  const roofMat = white();
+  roofMat.flatShading = true;
+  const glowMat = emissive(color, 2.2);
+  glowMat.flatShading = true;
+  const R0 = 0.2, R1 = 0.3, Y0 = 4.05, Y1 = 4.65; // linterna: más ancha arriba
+  const glass = new THREE.Mesh(new THREE.CylinderGeometry(R1, R0, Y1 - Y0, 8), glowMat);
+  glass.position.y = (Y0 + Y1) / 2;
+  g.add(new THREE.Mesh(lathe8(LAMP_BODY), frame), glass, new THREE.Mesh(lathe8(LAMP_ROOF), roofMat));
+  const up = new THREE.Vector3(0, 1, 0), a = new THREE.Vector3(), b = new THREE.Vector3();
+  for (let i = 0; i < 8; i++) {
+    const th = (i / 8) * Math.PI * 2, sin = Math.sin(th), cos = Math.cos(th);
+    a.set(sin * R0, Y0, cos * R0);
+    b.set(sin * R1, Y1, cos * R1);
+    const bar = new THREE.Mesh(new THREE.CylinderGeometry(0.02, 0.02, a.distanceTo(b), 5), frame);
+    bar.position.copy(a).add(b).multiplyScalar(0.5);
+    bar.quaternion.setFromUnitVectors(up, b.clone().sub(a).normalize());
+    g.add(bar);
   }
   return g;
 }
 
-function lampPost(color = 0x35e0ff) {
-  const g = new THREE.Group();
-  const pole = new THREE.Mesh(new THREE.CylinderGeometry(0.1, 0.16, 4.2, 8), new THREE.MeshStandardMaterial({ color: 0x24324a, metalness: 0.5, roughness: 0.4 }));
-  pole.position.y = 2.1;
-  const head = new THREE.Mesh(new THREE.SphereGeometry(0.32, 12, 10), emissive(color, 2.2));
-  head.position.y = 4.35;
-  const cap = new THREE.Mesh(new THREE.ConeGeometry(0.42, 0.3, 12), white());
-  cap.position.y = 4.75;
-  g.add(pole, head, cap);
-  return g;
-}
+const BANNER_W = 1.4, BANNER_H = 4.4;
 
-function banner(text, color) {
+// Bandera de plaza: poste metálico con base, dos brazos y panel con texto girado 90°.
+// island: 'EPIC ISLAND' a dos tonos; si no, solo 'EPIC'.
+function banner(island, color) {
   const g = new THREE.Group();
-  const pole = new THREE.Mesh(new THREE.CylinderGeometry(0.09, 0.09, 8, 6), white());
+  const metal = new THREE.MeshStandardMaterial({ color: 0xc4cbd2, metalness: 0.7, roughness: 0.35 });
+  const pole = new THREE.Mesh(new THREE.CylinderGeometry(0.06, 0.09, 8, 10), metal);
   pole.position.y = 4;
+  const foot = new THREE.Mesh(new THREE.CylinderGeometry(0.28, 0.28, 0.12, 16), metal);
+  foot.position.y = 0.06;
+  g.add(pole, foot);
+  for (const y of [3.1, 7.5]) {
+    const arm = new THREE.Mesh(new THREE.CylinderGeometry(0.03, 0.03, 1.6, 6), metal);
+    arm.rotation.z = Math.PI / 2;
+    arm.position.set(0.8, y, 0);
+    g.add(arm);
+  }
   const c = document.createElement('canvas');
-  c.width = 256; c.height = 768;
+  c.width = 512; c.height = 1600;
   const x = c.getContext('2d');
-  const col = '#' + new THREE.Color(color).getHexString();
-  const gr = x.createLinearGradient(0, 0, 0, 768);
-  gr.addColorStop(0, col); gr.addColorStop(1, '#0b1b3a');
-  x.fillStyle = gr; x.fillRect(0, 0, 256, 768);
-  x.fillStyle = '#fff'; x.font = '900 120px Nunito, system-ui, sans-serif'; x.textAlign = 'center';
-  [...text].forEach((ch, i) => x.fillText(ch, 128, 170 + i * 140));
+  x.fillStyle = '#e6eaee'; x.fillRect(0, 0, 512, 1600);
+  x.fillStyle = '#' + new THREE.Color(color).getHexString();
+  x.fillRect(34, 0, 36, 1600); x.fillRect(442, 0, 36, 1600);
+  // texto de abajo hacia arriba; se reduce hasta caber en el largo del panel
+  const first = island ? 'EPIC ' : 'EPIC', second = island ? 'ISLAND' : '';
+  const font = (px) => `900 ${px}px Nunito, system-ui, sans-serif`;
+  x.font = font(300);
+  const px = Math.floor(300 * Math.min(1, 1408 / x.measureText(first + second).width));
+  x.font = font(px);
+  const w1 = x.measureText(first).width, w2 = x.measureText(second).width;
+  x.translate(256, 800);
+  x.rotate(-Math.PI / 2);
+  x.textAlign = 'left'; x.textBaseline = 'middle';
+  x.fillStyle = '#0b1b3a'; x.fillText(first, -(w1 + w2) / 2, 0);
+  x.fillStyle = '#' + new THREE.Color(color).multiplyScalar(0.6).getHexString(); x.fillText(second, -(w1 + w2) / 2 + w1, 0);
   const tex = new THREE.CanvasTexture(c);
   tex.colorSpace = THREE.SRGBColorSpace;
-  const cloth = new THREE.Mesh(new THREE.PlaneGeometry(1.4, 4.2, 6, 10), new THREE.MeshStandardMaterial({ map: tex, side: THREE.FrontSide, roughness: 0.8 }));
-  cloth.position.set(0.75, 5.4, 0);
+  tex.anisotropy = 8;
+  const cloth = new THREE.Mesh(new THREE.PlaneGeometry(BANNER_W, BANNER_H, 8, 12), new THREE.MeshStandardMaterial({ map: tex, side: THREE.FrontSide, roughness: 0.8 }));
+  cloth.position.set(0.13 + BANNER_W / 2, 5.3, 0);
+  cloth.userData.dynamic = true; // el poste y los brazos se unen a la plaza estática; el panel se anima
   // back face with a horizontally flipped texture so the letters never read mirrored
   const texB = tex.clone();
   texB.repeat.x = -1; texB.offset.x = 1;
   cloth.add(new THREE.Mesh(cloth.geometry, new THREE.MeshStandardMaterial({ map: texB, side: THREE.BackSide, roughness: 0.8 })));
-  g.add(pole, cloth);
+  g.add(cloth);
   g.userData.cloth = cloth;
   return g;
+}
+
+// Onda del panel; no mueve el borde del poste ni los bordes sujetos a los brazos. amp 0 lo deja plano.
+function waveBanner(geo, t, ph, amp) {
+  const p = geo.attributes.position;
+  for (let i = 0; i < p.count; i++) {
+    const u = p.getX(i) / BANNER_W + 0.5, v = p.getY(i) / BANNER_H + 0.5;
+    p.setZ(i, Math.sin(u * 5 + v * 5 - t * 2.4 + ph) * amp * u * Math.sin(Math.PI * v));
+  }
+  p.needsUpdate = true;
+  geo.computeVertexNormals();
 }
 
 function barrierWall(pad, color) {
@@ -204,51 +244,580 @@ function barrierWall(pad, color) {
   return m;
 }
 
-function gearGeometry(R, teeth, depth) {
-  const shape = new THREE.Shape();
-  const inner = R * 0.82;
-  for (let i = 0; i < teeth * 2; i++) {
-    const a0 = (i / (teeth * 2)) * Math.PI * 2, a1 = ((i + 1) / (teeth * 2)) * Math.PI * 2;
-    const r = i % 2 ? inner : R;
-    if (i === 0) shape.moveTo(Math.cos(a0) * r, Math.sin(a0) * r);
-    shape.lineTo(Math.cos(a0) * r, Math.sin(a0) * r);
-    shape.lineTo(Math.cos(a1) * r, Math.sin(a1) * r);
+// Metal gastado: manchas oscuras y óxido sobre el color base, en unidades de mundo.
+function wornTexture(seed) {
+  const c = document.createElement('canvas');
+  c.width = c.height = 256;
+  const g = c.getContext('2d'), r = mulberry32(seed);
+  g.fillStyle = '#ffffff';
+  g.fillRect(0, 0, 256, 256);
+  for (let k = 0; k < 420; k++) {
+    const rad = 1 + r() * r() * 16;
+    g.fillStyle = r() < 0.65 ? `rgba(70,42,20,${0.04 + r() * 0.16})` : `rgba(255,226,170,${0.03 + r() * 0.12})`;
+    g.beginPath(); g.arc(r() * 256, r() * 256, rad, 0, Math.PI * 2); g.fill();
   }
-  const hole = new THREE.Path();
-  hole.absarc(0, 0, R * 0.3, 0, Math.PI * 2, true);
-  shape.holes.push(hole);
-  const g = new THREE.ExtrudeGeometry(shape, { depth, bevelEnabled: true, bevelSize: 0.08, bevelThickness: 0.08, bevelSegments: 1 });
-  g.center();
+  const t = new THREE.CanvasTexture(c);
+  t.wrapS = t.wrapT = THREE.RepeatWrapping;
+  t.repeat.set(0.3, 0.3);
+  t.colorSpace = THREE.SRGBColorSpace;
+  t.anisotropy = 4;
+  return t;
+}
+const GEAR_MATS = {
+  brass: new THREE.MeshStandardMaterial({ color: 0xc2953f, metalness: 0.45, roughness: 0.42, map: wornTexture(3) }),
+  copper: new THREE.MeshStandardMaterial({ color: 0xc4703a, metalness: 0.45, roughness: 0.38, map: wornTexture(9) }),
+  iron: new THREE.MeshStandardMaterial({ color: 0x4a4b53, metalness: 0.4, roughness: 0.6, flatShading: true }),
+  dark: new THREE.MeshStandardMaterial({ color: 0x2c2d33, metalness: 0.4, roughness: 0.6, flatShading: true }),
+};
+// Contorno de un engranaje: mismos dientes para un mismo módulo m, así engranan con cualquier otro.
+function gearOutline(N, m) {
+  const rp = (m * N) / 2, root = rp - 1.2 * m, tip = rp + 0.95 * m, step = (Math.PI * 2) / N, half = step / 4;
+  const pts = [];
+  for (let k = 0; k < N; k++) {
+    const a = k * step;
+    for (const [r, h] of [[root, -half * 1.22], [rp, -half * 0.8], [tip, -half * 0.34], [tip, half * 0.34], [rp, half * 0.8], [root, half * 1.22]]) {
+      pts.push([Math.cos(a + h) * r, Math.sin(a + h) * r]);
+    }
+  }
+  return pts;
+}
+// Engranaje steampunk: cuerpo de latón con ventanas, aro de cobre, cubo de hierro y remaches. Gira sobre su eje z.
+function steamGear(N, m, depth, bodyMat = GEAR_MATS.brass, opts = {}) {
+  const g = new THREE.Group(), outline = gearOutline(N, m), rp = (m * N) / 2, root = rp - 1.2 * m;
+  const shape = new THREE.Shape(outline.map(([x, y]) => new THREE.Vector2(x, y)));
+  const hub = opts.hub ?? rp * 0.26, ro = opts.rimIn ?? root - m * 1.1, ri = opts.spokeIn ?? hub + m * 0.9, w = opts.windows ?? (N >= 20 ? 6 : 5), gap = opts.gap ?? 0.22;
+  for (let k = 0; k < w; k++) {
+    const a0 = (k / w) * Math.PI * 2 + gap, a1 = ((k + 1) / w) * Math.PI * 2 - gap, hole = new THREE.Path();
+    hole.absarc(0, 0, ro, a0, a1, false);
+    hole.absarc(0, 0, ri, a1, a0, true);
+    shape.holes.push(hole);
+  }
+  const body = new THREE.Mesh(new THREE.ExtrudeGeometry(shape, { depth, bevelEnabled: true, bevelSize: 0.03, bevelThickness: 0.04, bevelSegments: 1 }).translate(0, 0, -depth / 2), bodyMat);
+  body.castShadow = true;
+  g.add(body);
+  // aro de cobre en ambas caras
+  for (const s of [-1, 1]) {
+    const rim = new THREE.Mesh(new THREE.TorusGeometry(root - m * 0.55, m * 0.2, 6, Math.max(32, N * 3)), GEAR_MATS.copper);
+    rim.position.z = s * (depth / 2 + 0.02);
+    rim.scale.z = 0.6;
+    g.add(rim);
+  }
+  // cubo: tambor de hierro, tapa de latón y eje
+  const drum = new THREE.CylinderGeometry(hub, hub * 1.08, depth + 0.4, 14).rotateX(Math.PI / 2);
+  const cap = new THREE.CylinderGeometry(hub * 0.5, hub * 0.68, 0.16, 8).rotateX(Math.PI / 2).translate(0, 0, depth / 2 + 0.26);
+  g.add(new THREE.Mesh(drum, GEAR_MATS.iron), new THREE.Mesh(cap, GEAR_MATS.brass));
+  // remaches en el aro y alrededor del cubo
+  const rivets = [], rivet = new THREE.IcosahedronGeometry(Math.max(0.05, m * 0.14), 0);
+  const ring = (r, count, z) => { for (let k = 0; k < count; k++) { const a = (k / count) * Math.PI * 2; rivets.push(rivet.clone().translate(Math.cos(a) * r, Math.sin(a) * r, z)); } };
+  ring(root - m * 0.55, Math.round(N / 2), depth / 2 + 0.08);
+  ring(root - m * 0.55, Math.round(N / 2), -depth / 2 - 0.08);
+  ring(hub * 0.8, 8, depth / 2 + 0.22);
+  g.add(new THREE.Mesh(mergeGeometries(rivets), GEAR_MATS.iron));
+  Object.assign(g.userData, { N, m, rp, outline });
   return g;
 }
 
-// Neuron-like glowing tree sculpture
-function neuronTree(color, rnd) {
+// Casa del Distrito STEAM: mismo cuerpo blanco y cúpula violeta, con pocas ventanas, franja, claraboya,
+// dos torres y una entrada en arco. front: ángulo hacia donde mira la entrada (x = sin, z = cos).
+function dressSteamHouse(obs, colliders, front) {
+  const violet = new THREE.MeshStandardMaterial({ color: 0x8b5cf6, metalness: 0.3, roughness: 0.3 });
+  const trim = new THREE.MeshStandardMaterial({ color: 0xc4a8ff, roughness: 0.5 });
+  const glass = new THREE.MeshStandardMaterial({ color: 0x24406f, emissive: 0x1b4f8f, emissiveIntensity: 0.55, roughness: 0.2, side: THREE.DoubleSide });
+  const shell = white();
+  const wallR = (y) => 7.5 - y / 12;
+  const ring = (y, h, rOff, th0, len, mat) => {
+    const r0 = wallR(y - h / 2) + rOff, r1 = wallR(y + h / 2) + rOff;
+    const m = new THREE.Mesh(new THREE.CylinderGeometry(r1, r0, h, Math.max(6, Math.ceil(len * 12)), 1, true, th0, len), mat);
+    m.position.y = y;
+    m.material.side = THREE.DoubleSide;
+    return m;
+  };
+  // franja continua alrededor del cuerpo
+  obs.add(ring(1.15, 0.16, 0.03, 0, Math.PI * 2, violet));
+  // pocas ventanas anchas con marco, repartidas por el cuerpo y sin tapar la entrada
+  for (const off of [-1.15, 1.15, 2.6, -2.6]) {
+    const len = 0.46;
+    obs.add(ring(3.15, 1.5, 0.04, front + off - len / 2 - 0.03, len + 0.06, trim), ring(3.15, 1.22, 0.07, front + off - len / 2, len, glass));
+  }
+  // dos ventanas pequeñas en la cúpula
+  const r = 7.05;
+  for (const off of [-0.72, 0.72]) {
+    const phi = front + off + Math.PI / 2;
+    const f = new THREE.Mesh(new THREE.SphereGeometry(r + 0.03, 8, 5, phi - 0.2, 0.4, 0.86, 0.34), trim);
+    const g = new THREE.Mesh(new THREE.SphereGeometry(r + 0.07, 8, 5, phi - 0.16, 0.32, 0.89, 0.28), glass);
+    f.position.y = g.position.y = 6;
+    f.material.side = THREE.DoubleSide;
+    obs.add(f, g);
+  }
+  // claraboya blanca en lo alto de la cúpula, como un casquete
+  const sky = new THREE.Mesh(new THREE.SphereGeometry(7.1, 32, 6, 0, Math.PI * 2, 0, 0.62), shell);
+  sky.position.y = 6;
+  const skyEdge = new THREE.Mesh(new THREE.TorusGeometry(7.1 * Math.sin(0.62), 0.1, 6, 40), trim);
+  skyEdge.rotation.x = Math.PI / 2;
+  skyEdge.position.y = 6 + 7.1 * Math.cos(0.62);
+  obs.add(sky, skyEdge);
+  const dirAt = (a, d) => [Math.sin(a) * d, Math.cos(a) * d];
+  // torre gruesa sobre la cúpula, atrás a la derecha
+  const [tx, tz] = dirAt(front + 2.05, 4.6);
+  const tower = new THREE.Mesh(new THREE.CylinderGeometry(1.25, 1.35, 5.2, 18), shell);
+  tower.position.set(tx, 10.6, tz);
+  tower.castShadow = true;
+  const towerCap = new THREE.Mesh(new THREE.SphereGeometry(1.25, 18, 8, 0, Math.PI * 2, 0, Math.PI / 2), violet);
+  towerCap.position.set(tx, 13.2, tz);
+  const towerBand = new THREE.Mesh(new THREE.CylinderGeometry(1.29, 1.31, 0.14, 18), trim);
+  towerBand.position.set(tx, 12.5, tz);
+  obs.add(tower, towerCap, towerBand);
+  const toTower = Math.atan2(-tx, -tz); // cara de la torre que da hacia la entrada
+  for (const [y, w] of [[11.6, 0.8], [10.2, 0.8]]) {
+    const win = new THREE.Mesh(new THREE.CylinderGeometry(1.31, 1.33, 0.46, 8, 1, true, toTower + Math.PI - w / 2, w), glass);
+    win.position.set(tx, y, tz);
+    obs.add(win);
+  }
+  // torre esbelta en el suelo, a la izquierda, con cabina redonda
+  const [sx, sz] = dirAt(front - 1.5, 11);
+  const foot = new THREE.Mesh(new THREE.CylinderGeometry(1.2, 1.45, 0.4, 18), shell);
+  foot.position.set(sx, 0.2, sz);
+  const mast = new THREE.Mesh(new THREE.CylinderGeometry(0.42, 0.55, 8, 12), shell);
+  mast.position.set(sx, 4.2, sz);
+  mast.castShadow = true;
+  const pod = new THREE.Mesh(new THREE.SphereGeometry(1.75, 20, 12), shell);
+  pod.scale.y = 0.72;
+  pod.position.set(sx, 8.8, sz);
+  pod.castShadow = true;
+  const podWin = new THREE.Mesh(new THREE.CylinderGeometry(1.62, 1.72, 0.42, 20, 1, true), glass);
+  podWin.position.set(sx, 8.95, sz);
+  const podCap = new THREE.Mesh(new THREE.SphereGeometry(1.2, 18, 7, 0, Math.PI * 2, 0, Math.PI / 2), violet);
+  podCap.scale.y = 0.55;
+  podCap.position.set(sx, 9.7, sz);
+  obs.add(foot, mast, pod, podWin, podCap);
+  // entrada: cuerpo en arco que sale del muro, con marco violeta y puerta
+  const W = 1.55, Hs = 2.2, D = 2.9;
+  const arch = (w, hs) => {
+    const s = new THREE.Shape();
+    s.moveTo(-w, 0); s.lineTo(w, 0); s.lineTo(w, hs); s.absarc(0, hs, w, 0, Math.PI, false); s.lineTo(-w, 0);
+    return s;
+  };
+  const entry = new THREE.Group();
+  const [ex, ez] = dirAt(front, 6.6);
+  entry.position.set(ex, 0, ez);
+  entry.rotation.y = front;
+  const block = new THREE.Mesh(new THREE.ExtrudeGeometry(arch(W, Hs), { depth: D, bevelEnabled: false, curveSegments: 10 }), shell);
+  block.castShadow = true;
+  const frame = new THREE.Mesh(new THREE.ExtrudeGeometry(arch(W + 0.16, Hs), { depth: 0.2, bevelEnabled: false, curveSegments: 10 }), violet);
+  frame.position.z = D - 0.08;
+  const door = new THREE.Mesh(new THREE.ExtrudeGeometry(arch(W - 0.4, Hs - 0.25), { depth: 0.12, bevelEnabled: false, curveSegments: 10 }), trim);
+  door.position.z = D + 0.1;
+  const split = new THREE.Mesh(new THREE.BoxGeometry(0.06, 3.1, 0.04), violet);
+  split.position.set(0, 1.55, D + 0.23);
+  const step = new THREE.Mesh(new THREE.BoxGeometry(W * 2 + 1, 0.14, 1.3), shell);
+  step.position.set(0, 0.07, D + 0.55);
+  entry.add(block, frame, door, split, step);
+  obs.add(entry);
+  // colisión: cuerpo, torre de suelo y entrada
+  const px = obs.position.x, py = obs.position.y, pz = obs.position.z;
+  colliders.addCircle(px, pz, 7.55, py - 1, py + 13, 'house');
+  colliders.addCircle(px + sx, pz + sz, 0.75, py - 1, py + 7, 'house');
+  const [bx, bz] = dirAt(front, 6.6 + D / 2);
+  colliders.addBox(px + bx, pz + bz, W + 0.16, D / 2 + 0.1, front, py - 1, py + Hs + W, 'house');
+}
+
+// Máquina steampunk. Lógica: la caldera da vapor al cilindro, el pistón mueve la biela y la manivela del piñón;
+// el piñón hace girar la gran rueda dentada, que lleva 3 engranajes en sus radios rodando sobre un sol fijo.
+function steamMachine(x, y, z, colliders) {
   const g = new THREE.Group();
-  const mat = emissive(color, 1.3);
-  const soma = new THREE.Mesh(new THREE.IcosahedronGeometry(0.7, 1), mat.clone());
-  soma.position.y = 4;
-  soma.userData.dynamic = true;
-  g.add(soma);
-  const branch = (from, dir, len, depth) => {
-    const to = from.clone().add(dir.clone().multiplyScalar(len));
-    const curve = new THREE.QuadraticBezierCurve3(from, from.clone().lerp(to, 0.5).add(new THREE.Vector3((rnd() - 0.5) * 0.6, 0.3, (rnd() - 0.5) * 0.6)), to);
-    g.add(new THREE.Mesh(new THREE.TubeGeometry(curve, 8, 0.09 * (depth + 1) * 0.6, 5), mat));
-    if (depth > 0) for (let k = 0; k < 2; k++) {
-      const nd = dir.clone().add(new THREE.Vector3((rnd() - 0.5) * 1.4, rnd() * 0.6, (rnd() - 0.5) * 1.4)).normalize();
-      branch(to, nd, len * 0.65, depth - 1);
-    } else {
-      const tip = new THREE.Mesh(new THREE.SphereGeometry(0.12, 6, 5), mat);
-      tip.position.copy(to);
-      g.add(tip);
+  g.position.set(x, y, z);
+  const M = 0.3, depth = 0.6, axleY = 9, planeZ = 2.15, frontZ = planeZ + 0.75;
+  const addCyl = (rt, rb, h, px, py, pz, mat, seg = 8, axis = 'y') => {
+    const geo = new THREE.CylinderGeometry(rt, rb, h, seg);
+    if (axis === 'z') geo.rotateX(Math.PI / 2);
+    if (axis === 'x') geo.rotateZ(Math.PI / 2);
+    const m = new THREE.Mesh(geo, mat);
+    m.position.set(px, py, pz);
+    m.castShadow = true;
+    g.add(m);
+    return m;
+  };
+  const addBox = (w, h, d, px, py, pz, mat) => {
+    const m = new THREE.Mesh(new THREE.BoxGeometry(w, h, d), mat);
+    m.position.set(px, py, pz);
+    m.castShadow = true;
+    g.add(m);
+    return m;
+  };
+  const addBeam = (a, b, w, d, mat) => {
+    const dir = b.clone().sub(a), m = new THREE.Mesh(new THREE.BoxGeometry(w, dir.length(), d), mat);
+    m.position.copy(a).addScaledVector(dir, 0.5);
+    m.quaternion.setFromUnitVectors(new THREE.Vector3(0, 1, 0), dir.clone().normalize());
+    m.castShadow = true;
+    g.add(m);
+    return m;
+  };
+
+  // ---------------- poste de hierro: zócalo escalonado, fuste con bandas de latón y remate con farol
+  addCyl(1.95, 2.25, 0.5, 0, 0.25, 0, GEAR_MATS.dark);
+  addCyl(1.55, 1.85, 0.5, 0, 0.75, 0, GEAR_MATS.iron);
+  addCyl(0.95, 1.3, 13.9, 0, 7.95, 0, GEAR_MATS.iron);
+  for (const py of [1.3, 4.4, 13, 14.9]) {
+    const k = (py - 1) / 13.9;
+    addCyl(1.36 - k * 0.34, 1.4 - k * 0.34, 0.34, 0, py, 0, GEAR_MATS.brass);
+  }
+  addCyl(1.25, 1.02, 0.4, 0, 15.2, 0, GEAR_MATS.dark);
+  addCyl(0.5, 0.5, 1, 0, 15.9, 0, emissive(0xffc266, 1.8), 8);
+  for (let k = 0; k < 8; k++) { const a = (k / 8) * Math.PI * 2; addCyl(0.05, 0.05, 1, Math.cos(a) * 0.55, 15.9, Math.sin(a) * 0.55, GEAR_MATS.dark, 5); }
+  addCyl(0.08, 0.95, 0.75, 0, 16.75, 0, GEAR_MATS.copper);
+  // cojinete que une el poste con el eje de la rueda
+  addBox(2.4, 2.4, 1.55, 0, axleY, 1.25, GEAR_MATS.dark);
+  addCyl(0.55, 0.55, frontZ + 0.7 - 1, 0, axleY, (frontZ + 0.7 + 1) / 2, GEAR_MATS.iron, 12, 'z');
+  addCyl(0.3, 0.72, 0.28, 0, axleY, frontZ + 0.82, GEAR_MATS.brass, 8, 'z').rotation.x = 0;
+
+  // ---------------- gran rueda dentada (como un plato) con 3 radios, que hace de portaengranajes
+  const wheel = steamGear(44, M, depth, GEAR_MATS.copper, { hub: 1.25, rimIn: 5.55, spokeIn: 1.45, windows: 6, gap: 0.075 });
+  wheel.position.set(0, axleY, planeZ);
+  wheel.userData.dynamic = true;
+  g.add(wheel);
+
+  // sol fijo en el centro y 3 engranajes que ruedan sobre él, sujetos a los radios
+  const sun = steamGear(14, M, 0.5, GEAR_MATS.brass, { hub: 0.58, windows: 5, gap: 0.3 });
+  sun.position.set(0, axleY, frontZ);
+  sun.userData.dynamic = true;
+  g.add(sun);
+  const Ws = 0.16, wheelSpeed = Ws, planetR = (M * (14 + 10)) / 2;
+  const planets = [];
+  for (let k = 0; k < 3; k++) {
+    const ang = (k / 3) * Math.PI * 2;
+    const pl = steamGear(10, M, 0.5, GEAR_MATS.brass, { hub: 0.4, windows: 3, gap: 0.42 });
+    pl.position.set(Math.cos(ang) * planetR, Math.sin(ang) * planetR, frontZ - planeZ);
+    // eje del engranaje, que atraviesa hasta el radio de la rueda
+    const pin = new THREE.Mesh(new THREE.CylinderGeometry(0.22, 0.22, frontZ - planeZ, 10).rotateX(Math.PI / 2), GEAR_MATS.dark);
+    pin.position.set(pl.position.x, pl.position.y, (frontZ - planeZ) / 2);
+    wheel.add(pin, pl);
+    // diente del sol dentro de un hueco del engranaje en el arranque (ángulo de mundo con la rueda en 0)
+    const pSun = (ang * 14) / (Math.PI * 2);
+    const phase = ang + Math.PI - ((0.5 - pSun) * Math.PI * 2) / 10;
+    pl.userData.phase = phase;
+    pl.userData.local = (Ws * 14) / 10; // en la rueda gira así; visto de fuera suma el giro de la rueda
+    pl.rotation.z = phase;
+    planets.push(pl);
+  }
+
+  // ---------------- piñón motriz sobre el bastidor del motor, engranado con la rueda
+  const pinA = -0.58, pinN = 14, pinDist = (M * (44 + pinN)) / 2;
+  const px = Math.cos(pinA) * pinDist, py = axleY + Math.sin(pinA) * pinDist;
+  const pPin = (pinA * 44) / (Math.PI * 2);
+  const pinPhase = pinA + Math.PI - ((0.5 - pPin) * Math.PI * 2) / pinN, pinSpeed = (-Ws * 44) / pinN;
+  const pinion = steamGear(pinN, M, depth, GEAR_MATS.brass, { hub: 0.6, windows: 4, gap: 0.26 });
+  pinion.position.set(px, py, planeZ);
+  pinion.userData.dynamic = true;
+  pinion.rotation.z = pinPhase;
+  g.add(pinion);
+  // bastidor en A: dos patas de hierro del suelo al eje del piñón, detrás del engranaje
+  const fz = planeZ - 0.62;
+  for (const s of [-1, 1]) addBeam(new THREE.Vector3(px + s * 1.9, 0.1, fz), new THREE.Vector3(px + s * 0.25, py, fz), 0.36, 0.34, GEAR_MATS.iron);
+  addBox(4.6, 0.3, 1.2, px, 0.15, fz, GEAR_MATS.dark);
+  addBeam(new THREE.Vector3(px - 1.1, py * 0.42, fz), new THREE.Vector3(px + 1.1, py * 0.42, fz), 0.24, 0.24, GEAR_MATS.iron);
+  addCyl(0.42, 0.42, 0.7, px, py, fz + 0.1, GEAR_MATS.dark, 10, 'z');
+  addCyl(0.2, 0.2, planeZ - fz + 0.36, px, py, (planeZ + fz) / 2 + 0.18, GEAR_MATS.iron, 10, 'z');
+  colliders.addBox(x + px, z + fz, 2.3, 0.6, 0, y - 1, y + 0.3, 'machine');
+
+  // ---------------- manivela, biela y pistón
+  const crankR = 0.95, rodLen = 4.2, crankZ = planeZ + depth / 2 + 0.25, cylX = px + 7.9;
+  const crank = new THREE.Group();
+  crank.position.set(px, py, crankZ);
+  crank.userData.dynamic = true;
+  const web = new THREE.Mesh(new THREE.BoxGeometry(crankR + 0.5, 0.42, 0.18), GEAR_MATS.iron);
+  web.position.x = crankR / 2;
+  const crankPin = new THREE.Mesh(new THREE.CylinderGeometry(0.15, 0.15, 0.5, 10).rotateX(Math.PI / 2), GEAR_MATS.brass);
+  crankPin.position.set(crankR, 0, 0.2);
+  crank.add(web, crankPin);
+  g.add(crank);
+  const rodGeo = new THREE.CylinderGeometry(0.11, 0.11, 1, 8);
+  const rod = new THREE.Mesh(rodGeo, GEAR_MATS.brass);
+  rod.userData.dynamic = true;
+  g.add(rod);
+  const headGeo = new THREE.BoxGeometry(0.46, 0.5, 0.4);
+  const head = new THREE.Mesh(headGeo, GEAR_MATS.iron);
+  head.userData.dynamic = true;
+  g.add(head);
+  const pistonRod = new THREE.Mesh(new THREE.CylinderGeometry(0.09, 0.09, 1, 8).rotateZ(Math.PI / 2), GEAR_MATS.iron);
+  pistonRod.userData.dynamic = true;
+  g.add(pistonRod);
+  // cilindro de vapor con guías, sobre un pedestal
+  addCyl(0.72, 0.72, 2.6, cylX, py, crankZ, GEAR_MATS.copper, 12, 'x');
+  for (const dx of [-1.3, 1.3]) addCyl(0.82, 0.82, 0.16, cylX + dx, py, crankZ, GEAR_MATS.brass, 12, 'x');
+  addBox(1.5, py - 0.4, 1, cylX, (py - 0.4) / 2, crankZ, GEAR_MATS.iron);
+  addBox(2.2, 0.28, 1.5, cylX, 0.14, crankZ, GEAR_MATS.dark);
+  for (const s of [-1, 1]) addBox(cylX - 1.4 - (px + rodLen - crankR - 0.4), 0.08, 0.08, (cylX - 1.4 + px + rodLen - crankR - 0.4) / 2, py + s * 0.34, crankZ, GEAR_MATS.dark);
+  colliders.addBox(x + cylX, z + crankZ, 1.1, 0.8, 0, y - 1, y + py + 0.7, 'machine');
+
+  // ---------------- caldera de cobre con chimenea y tubo hasta el cilindro
+  const boilX = cylX + 3.5;
+  addCyl(1.25, 1.25, 3.2, boilX, 1.5, crankZ, GEAR_MATS.copper, 14);
+  addCyl(1.3, 1.45, 0.36, boilX, 0.18, crankZ, GEAR_MATS.dark, 14);
+  addCyl(0.1, 1.25, 0.8, boilX, 3.5, crankZ, GEAR_MATS.copper, 14);
+  for (const b of [1, 2.2]) addCyl(1.3, 1.3, 0.14, boilX, b, crankZ, GEAR_MATS.brass, 14);
+  addCyl(0.26, 0.32, 2.4, boilX, 4.9, crankZ, GEAR_MATS.dark, 10);
+  addCyl(0.44, 0.28, 0.42, boilX, 6.2, crankZ, GEAR_MATS.brass, 10);
+  addBeam(new THREE.Vector3(boilX - 1.2, 2.6, crankZ), new THREE.Vector3(cylX + 1.3, py, crankZ), 0.2, 0.2, GEAR_MATS.brass);
+  addCyl(0.34, 0.34, 0.1, boilX, 1.9, crankZ + 1.28, emissive(0xffb020, 1.3), 12, 'z');
+  colliders.addCircle(x + boilX, z + crankZ, 1.4, y - 1, y + 4, 'machine');
+  colliders.addCircle(x, z, 1.9, y - 1, y + 16, 'machine');
+  // vapor de la chimenea
+  const puffTex = softSpriteTexture('rgba(245,245,250,0.75)', 'rgba(245,245,250,0)');
+  const puffs = [0, 1, 2, 3].map((i) => {
+    const sp = new THREE.Sprite(new THREE.SpriteMaterial({ map: puffTex, transparent: true, depthWrite: false }));
+    sp.userData.dynamic = true;
+    sp.userData.ph = i / 4;
+    g.add(sp);
+    return sp;
+  });
+
+  const rodUp = new THREE.Vector3(0, 1, 0), pinW = new THREE.Vector3(), headW = new THREE.Vector3(), dir = new THREE.Vector3();
+  g.userData.parts = { wheel, sun, planets, pinion, crank, rod, head, pistonRod, cylX, py, crankZ, wheelSpeed, pinPhase, pinSpeed };
+  g.userData.tick = (t) => {
+    wheel.rotation.z = wheelSpeed * t;
+    for (const pl of planets) pl.rotation.z = pl.userData.phase + pl.userData.local * t;
+    const pa = pinPhase + pinSpeed * t;
+    pinion.rotation.z = pa;
+    crank.rotation.z = pa;
+    // biela: de la manivela a la cruceta, que solo se mueve en línea recta hacia el cilindro
+    pinW.set(px + Math.cos(pa) * crankR, py + Math.sin(pa) * crankR, crankZ + 0.3);
+    const hx = pinW.x + Math.sqrt(rodLen * rodLen - (pinW.y - py) ** 2);
+    headW.set(hx, py, crankZ + 0.3);
+    head.position.copy(headW);
+    dir.copy(headW).sub(pinW);
+    rod.position.copy(pinW).addScaledVector(dir, 0.5);
+    rod.scale.y = dir.length();
+    rod.quaternion.setFromUnitVectors(rodUp, dir.normalize());
+    const inCyl = cylX - 0.2;
+    pistonRod.position.set((hx + inCyl) / 2, py, crankZ + 0.3);
+    pistonRod.scale.x = Math.max(0.01, inCyl - hx);
+    pistonRod.scale.y = pistonRod.scale.z = 1;
+    for (const sp of puffs) {
+      const k = (t * 0.32 + sp.userData.ph) % 1;
+      sp.position.set(boilX + k * 0.9, 6.4 + k * 3.4, crankZ + Math.sin(k * 7 + sp.userData.ph * 6) * 0.25);
+      sp.scale.setScalar(0.7 + k * 2.3);
+      sp.material.opacity = 0.62 * (1 - k);
     }
   };
-  for (let k = 0; k < 4; k++) {
-    const a = (k / 4) * Math.PI * 2 + rnd();
-    branch(soma.position.clone(), new THREE.Vector3(Math.cos(a), 0.7, Math.sin(a)).normalize(), 1.8, 2);
+  g.userData.tick(0);
+  return g;
+}
+
+// Torre de energía: patas abiertas, núcleo de cristal, tres anillos en la columna y rayos que cambian de forma.
+function teslaTower() {
+  const g = new THREE.Group(), shell = white();
+  const steel = new THREE.MeshStandardMaterial({ color: 0xd4d8e2, metalness: 0.45, roughness: 0.3 });
+  const dark = new THREE.MeshStandardMaterial({ color: 0x5b4b8a, metalness: 0.4, roughness: 0.35 });
+  const violet = emissive(0x8b5cf6, 1.4), lilac = emissive(0xd9c6ff, 2.2);
+  const up = new THREE.Vector3(0, 1, 0);
+  const beam = (a, b, w, d, mat) => {
+    const dir = b.clone().sub(a), m = new THREE.Mesh(new THREE.BoxGeometry(w, dir.length(), d), mat);
+    m.position.copy(a).addScaledVector(dir, 0.5);
+    m.quaternion.setFromUnitVectors(up, dir.normalize());
+    m.castShadow = true;
+    return m;
+  };
+  // plataforma hexagonal, baja para subirla caminando
+  const pad = new THREE.Mesh(new THREE.CylinderGeometry(3.1, 3.5, 0.45, 6), shell);
+  pad.position.y = 0.225;
+  pad.castShadow = pad.receiveShadow = true;
+  // franja con las esquinas alineadas a las de la plataforma, un poco hacia dentro de su borde
+  const padLine = new THREE.Mesh(new THREE.TorusGeometry(2.92, 0.07, 6, 6), violet);
+  padLine.rotation.set(Math.PI / 2, 0, Math.PI / 6);
+  padLine.position.y = 0.46;
+  g.add(pad, padLine);
+  // tres patas con filete luminoso, unidas por dos anillos triangulares
+  const legAt = (k, y) => {
+    const a = (k / 3) * Math.PI * 2 + Math.PI / 2, r = 2.55 + ((y - 0.45) / 5.95) * (0.45 - 2.55);
+    return new THREE.Vector3(Math.cos(a) * r, y, Math.sin(a) * r);
+  };
+  for (let k = 0; k < 3; k++) {
+    g.add(beam(legAt(k, 0.45), legAt(k, 6.4), 0.5, 0.5, shell), beam(legAt(k, 0.9), legAt(k, 6), 0.13, 0.54, violet));
+    for (const y of [2.2, 4]) g.add(beam(legAt(k, y), legAt((k + 1) % 3, y), 0.18, 0.18, shell));
   }
-  // trunk (axon) to ground
-  g.add(new THREE.Mesh(new THREE.CylinderGeometry(0.12, 0.25, 4, 6), mat).translateY(2));
+  // núcleo de cristal
+  const crystal = new THREE.Mesh(new THREE.OctahedronGeometry(1, 0), lilac);
+  crystal.scale.set(0.72, 1.9, 0.72);
+  crystal.position.y = 3;
+  crystal.userData.dynamic = true;
+  g.add(crystal);
+  // columna, y tres anillos unidos a ella con radios
+  const col = new THREE.Mesh(new THREE.CylinderGeometry(0.31, 0.31, 3, 10), dark);
+  col.position.y = 7.85;
+  const collar = new THREE.Mesh(new THREE.CylinderGeometry(0.62, 0.52, 0.4, 10), shell);
+  collar.position.y = 6.4;
+  g.add(col, collar);
+  const rings = [[6.7, 1.9], [7.75, 1.45], [8.75, 1]];
+  for (const [y, r] of rings) {
+    const t = new THREE.Mesh(new THREE.TorusGeometry(r, 0.18, 8, 32), steel), line = new THREE.Mesh(new THREE.TorusGeometry(r - 0.2, 0.05, 6, 32), lilac);
+    t.rotation.x = line.rotation.x = Math.PI / 2;
+    t.position.y = line.position.y = y;
+    t.castShadow = true;
+    g.add(t, line);
+    for (let k = 0; k < 3; k++) {
+      const a = (k / 3) * Math.PI * 2 + y;
+      g.add(beam(new THREE.Vector3(Math.cos(a) * 0.25, y, Math.sin(a) * 0.25), new THREE.Vector3(Math.cos(a) * r, y, Math.sin(a) * r), 0.12, 0.12, dark));
+    }
+  }
+  // esfera superior con resplandor
+  const neck = new THREE.Mesh(new THREE.CylinderGeometry(0.22, 0.34, 0.6, 10), shell);
+  neck.position.y = 9.4;
+  const orb = new THREE.Mesh(new THREE.IcosahedronGeometry(0.7, 2), lilac);
+  orb.position.y = 10.1;
+  orb.userData.dynamic = true;
+  const halo = new THREE.Sprite(new THREE.SpriteMaterial({ map: softSpriteTexture('rgba(190,160,255,0.85)', 'rgba(140,100,255,0)'), transparent: true, depthWrite: false, blending: THREE.AdditiveBlending }));
+  halo.position.y = 10.1;
+  halo.scale.setScalar(3.4);
+  halo.userData.dynamic = true;
+  g.add(neck, orb, halo);
+  // rayos: cintas cruzadas en zigzag, redibujadas cada décima de segundo
+  const arcs = [
+    { a: [0.6, 10.2, 0], b: [2.6, 11.5, 0.4] }, { a: [-0.6, 10.2, 0], b: [-2.5, 11.6, -0.3] },
+    { a: [1.9, 6.7, 0], b: [1.45, 7.75, 0] }, { a: [-1.45, 7.75, 0], b: [-1, 8.75, 0] },
+    { a: [0, 6.7, 1.9], b: [0.3, 3.3, 2.9] }, { a: [0, 6.7, -1.9], b: [-0.5, 3.6, -2.8] },
+  ];
+  const SEG = 6, arcData = new Float32Array(arcs.length * SEG * 2 * 6 * 3);
+  const arcGeo = new THREE.BufferGeometry();
+  arcGeo.setAttribute('position', new THREE.BufferAttribute(arcData, 3));
+  const arcMesh = new THREE.Mesh(arcGeo, new THREE.MeshBasicMaterial({ color: 0xe6dcff, side: THREE.DoubleSide, transparent: true, depthWrite: false, blending: THREE.AdditiveBlending, toneMapped: false }));
+  arcMesh.frustumCulled = false;
+  arcMesh.userData.dynamic = true;
+  g.add(arcMesh);
+  const redraw = () => {
+    let o = 0;
+    const quad = (p, q, wx, wz) => {
+      const v = [[p[0] - wx, p[1], p[2] - wz], [p[0] + wx, p[1], p[2] + wz], [q[0] + wx, q[1], q[2] + wz], [p[0] - wx, p[1], p[2] - wz], [q[0] + wx, q[1], q[2] + wz], [q[0] - wx, q[1], q[2] - wz]];
+      for (const c of v) { arcData[o++] = c[0]; arcData[o++] = c[1]; arcData[o++] = c[2]; }
+    };
+    for (const { a, b } of arcs) {
+      const on = Math.random() < 0.7;
+      let prev = a;
+      for (let s = 1; s <= SEG; s++) {
+        const t = s / SEG, j = s === SEG ? 0 : 0.28;
+        const cur = [a[0] + (b[0] - a[0]) * t + (Math.random() - 0.5) * j * 2, a[1] + (b[1] - a[1]) * t + (Math.random() - 0.5) * j * 2, a[2] + (b[2] - a[2]) * t + (Math.random() - 0.5) * j * 2];
+        const w = on ? 0.035 + 0.02 * (1 - t) : 0;
+        quad(prev, cur, w, 0);
+        quad(prev, cur, 0, w);
+        prev = cur;
+      }
+    }
+    arcGeo.attributes.position.needsUpdate = true;
+  };
+  redraw();
+  let next = 0;
+  g.userData.tick = (t) => {
+    crystal.rotation.y = t * 0.5;
+    const beat = 1 + Math.sin(t * 5) * 0.06;
+    orb.scale.setScalar(beat);
+    halo.scale.setScalar(3.4 * beat);
+    if (t >= next) { redraw(); next = t + 0.1; }
+  };
+  g.userData.legs = [0, 1, 2].map((k) => legAt(k, 0.45));
+  return g;
+}
+
+// Tubo curvo que se afina de r0 a r1; sus uniones se tapan con una esfera en cada nudo.
+function taperedLimb(from, control, to, r0, r1, mat, seg = 6) {
+  const curve = new THREE.QuadraticBezierCurve3(from, control, to);
+  const geo = new THREE.TubeGeometry(curve, seg, 1, 5);
+  const p = geo.attributes.position, c = new THREE.Vector3(), v = new THREE.Vector3();
+  for (let j = 0; j <= seg; j++) {
+    curve.getPointAt(j / seg, c);
+    const r = r0 + (r1 - r0) * (j / seg);
+    for (let k = 0; k <= 5; k++) {
+      const i = j * 6 + k;
+      v.fromBufferAttribute(p, i).sub(c).multiplyScalar(r).add(c);
+      p.setXYZ(i, v.x, v.y, v.z);
+    }
+  }
+  const m = new THREE.Mesh(geo, mat);
+  m.castShadow = true;
+  return m;
+}
+const knot = (pos, r, mat, detail = 1) => {
+  const m = new THREE.Mesh(new THREE.IcosahedronGeometry(r, detail), mat);
+  m.position.copy(pos);
+  return m;
+};
+// ramas continuas: cada hija nace en la punta de su madre. tip recibe cada extremo final.
+function grownBranch(g, rnd, from, dir, len, r0, depth, mat, spread, tip) {
+  const to = from.clone().addScaledVector(dir, len), r1 = r0 * 0.68;
+  const control = from.clone().lerp(to, 0.55).add(new THREE.Vector3((rnd() - 0.5) * len * 0.3, (rnd() - 0.2) * len * 0.22, (rnd() - 0.5) * len * 0.3));
+  g.add(taperedLimb(from, control, to, r0, r1, mat, 4), knot(to, r1 * 1.08, mat, 0));
+  if (depth === 0) { tip(to); return; }
+  const n = depth > 1 || rnd() < 0.5 ? 2 : 3;
+  for (let k = 0; k < n; k++) {
+    const a = (k / n) * Math.PI * 2 + rnd() * Math.PI;
+    const side = new THREE.Vector3(Math.cos(a), 0, Math.sin(a)).multiplyScalar(spread);
+    const nd = dir.clone().add(side).add(new THREE.Vector3(0, 0.15 + rnd() * 0.2, 0)).normalize();
+    grownBranch(g, rnd, to, nd, len * (0.66 + rnd() * 0.1), r1, depth - 1, mat, spread, tip);
+  }
+}
+
+// Árbol A: neurona con núcleo, dendritas, axón con mielina y terminales en el suelo. Sin colisión en dendritas.
+function neuronTreeA(rnd) {
+  const g = new THREE.Group();
+  const mat = emissive(0x35e0ff, 1.3), myelin = white();
+  const somaY = 4.15, V = (x, y, z) => new THREE.Vector3(x, y, z);
+  // terminales del axón
+  for (let k = 0; k < 4; k++) {
+    const a = (k / 4) * Math.PI * 2 + 0.6, r = 1.1 + rnd() * 0.5, end = V(Math.cos(a) * r, 0.07, Math.sin(a) * r);
+    g.add(taperedLimb(V(0, 0.72, 0), V(Math.cos(a) * r * 0.35, 0.05, Math.sin(a) * r * 0.35), end, 0.1, 0.05, mat), knot(end, 0.13, mat));
+  }
+  // axón con vainas de mielina y nodos
+  g.add(taperedLimb(V(0, 0.72, 0), V(0, 2.4, 0), V(0, somaY, 0), 0.09, 0.1, mat, 3));
+  for (const y of [1.3, 2.2, 3.07]) {
+    const c = new THREE.Mesh(new THREE.CapsuleGeometry(0.25, 0.2, 3, 10), myelin);
+    c.position.y = y;
+    c.castShadow = true;
+    g.add(c);
+  }
+  for (const y of [1.75, 2.65, 3.5]) g.add(knot(V(0, y, 0), 0.13, mat));
+  // dendritas
+  for (let k = 0; k < 5; k++) {
+    const a = (k / 5) * Math.PI * 2 + rnd() * 0.5, dir = V(Math.cos(a), 0.45 + rnd() * 0.45, Math.sin(a)).normalize();
+    grownBranch(g, rnd, V(0, somaY, 0), dir, 1.15, 0.13, 2, mat, 0.5, (p) => g.add(knot(p, 0.1 + rnd() * 0.05, mat)));
+  }
+  // cuerpo translúcido con el núcleo visible, que late
+  const bodyMat = emissive(0x8cecff, 0.9);
+  bodyMat.transparent = true; bodyMat.opacity = 0.55; bodyMat.depthWrite = false;
+  const body = new THREE.Mesh(new THREE.IcosahedronGeometry(0.72, 2), bodyMat);
+  body.position.y = somaY;
+  const nucleus = new THREE.Mesh(new THREE.IcosahedronGeometry(0.3, 1), new THREE.MeshStandardMaterial({ color: 0x2f7fb8, emissive: 0x2f7fb8, emissiveIntensity: 1, roughness: 0.4 }));
+  nucleus.position.y = somaY;
+  nucleus.userData.dynamic = true;
+  g.add(nucleus, body);
+  g.userData.tick = (t, ph) => { nucleus.scale.setScalar(1 + Math.sin(t * 3 + ph) * 0.14); };
+  return g;
+}
+
+// Árbol B: tronco y ramas violeta con copa de luces e impulsos cian que suben por el tronco.
+function neuronTreeB(rnd) {
+  const g = new THREE.Group();
+  const bark = new THREE.MeshStandardMaterial({ color: 0x5c448e, roughness: 0.75 });
+  const light = emissive(0xb57bff, 1.6), V = (x, y, z) => new THREE.Vector3(x, y, z);
+  const crown = V(0.05, 2.6, 0);
+  g.add(taperedLimb(V(0, 0, 0), V(0.1, 1.2, 0.05), crown, 0.36, 0.22, bark, 8), knot(crown, 0.23, bark));
+  for (let k = 0; k < 5; k++) {
+    const a = (k / 5) * Math.PI * 2 + 0.3, r = 1 + rnd() * 0.5;
+    g.add(taperedLimb(V(0, 0.42, 0), V(Math.cos(a) * r * 0.4, 0.06, Math.sin(a) * r * 0.4), V(Math.cos(a) * r, 0.03, Math.sin(a) * r), 0.16, 0.04, bark));
+  }
+  for (let k = 0; k < 5; k++) {
+    const a = (k / 5) * Math.PI * 2 + rnd() * 0.4, dir = V(Math.cos(a), 0.6 + rnd() * 0.5, Math.sin(a)).normalize();
+    grownBranch(g, rnd, crown, dir, 1.5, 0.18, 3, bark, 0.42, (p) => g.add(knot(p, 0.13 + rnd() * 0.1, light)));
+  }
+  // impulsos: suben por el tronco y vuelven a empezar
+  const impulseMat = emissive(0x35e0ff, 2.6);
+  const impulses = [0, 1, 2].map(() => {
+    const m = new THREE.Mesh(new THREE.IcosahedronGeometry(0.1, 1), impulseMat);
+    m.userData.dynamic = true;
+    g.add(m);
+    return m;
+  });
+  g.userData.tick = (t, ph) => impulses.forEach((m, i) => {
+    const y = ((t * 0.4 + ph + i / 3) % 1) * 2.5, side = 0.36 + (0.22 - 0.36) * (y / 2.6);
+    m.position.set(0.05 * (y / 2.6) + side, y, 0);
+  });
   return g;
 }
 
@@ -272,8 +841,10 @@ export function buildDistricts(scene, colliders, kenney) {
   const ring2 = ring1.clone(); ring2.scale.setScalar(4.3 / 6.5); ring2.position.y = P.h + 1.62;
   [tier1, tier2].forEach((m) => { m.castShadow = m.receiveShadow = true; });
   root.add(tier1, tier2, ring1, ring2);
-  colliders.addCircle(P.x, P.z, 6.6, P.h - 1, P.h + 0.8, 'tier');
-  colliders.addCircle(P.x, P.z, 4.4, P.h - 1, P.h + 1.6, 'tier');
+  colliders.addCircle(P.x, P.z, 6.61, P.h - 1, P.h + 0.38, 'tier');
+  colliders.addCircle(P.x, P.z, 6.4, P.h - 1, P.h + 0.8, 'tier');
+  colliders.addCircle(P.x, P.z, 4.36, P.h - 1, P.h + 1.18, 'tier');
+  colliders.addCircle(P.x, P.z, 4.2, P.h - 1, P.h + 1.6, 'tier');
   // holographic globe
   const globe = new THREE.Group();
   globe.position.set(P.x, P.h + 8.5, P.z);
@@ -307,35 +878,68 @@ export function buildDistricts(scene, colliders, kenney) {
   root.add(globe);
   const beamMat = holoMaterial(0x35e0ff, { intensity: 0.6, lines: 3 });
   holoMats.push(beamMat);
-  const beam = new THREE.Mesh(new THREE.CylinderGeometry(1.2, 2.6, 5.5, 32, 1, true), beamMat);
-  beam.position.set(P.x, P.h + 4.3, P.z);
-  root.add(beam);
+  // 4 proyectores en diagonal sobre el stand; sus haces entran en el mundo aunque este flote
+  const standTop = P.h + 1.6, projBody = white(), up = new THREE.Vector3(0, 1, 0);
+  const lensMat = emissive(0x7ff6ff, 2.4);
+  for (let k = 0; k < 4; k++) {
+    const a = Math.PI / 4 + (k * Math.PI) / 2, ca = Math.cos(a), sa = Math.sin(a);
+    const fx = P.x + ca * 3.35, fz = P.z + sa * 3.35;
+    const target = new THREE.Vector3(P.x + ca * 1.5, P.h + 8.5 - 3.15, P.z + sa * 1.5);
+    const base = new THREE.Vector3(fx, standTop + 0.5, fz);
+    const axis = target.clone().sub(base).normalize();
+    const lens = base.clone().addScaledVector(axis, 0.18);
+    root.add(
+      new THREE.Mesh(facetedCyl(0.42, 0.52, 0.14, fx, standTop + 0.07, fz), PORTAL_MATS.stone),
+      new THREE.Mesh(facetedCyl(0.2, 0.3, 0.26, fx, standTop + 0.27, fz), projBody),
+    );
+    const head = new THREE.Group();
+    head.position.copy(lens);
+    head.quaternion.setFromUnitVectors(up, axis);
+    const len = lens.distanceTo(target) + 0.45;
+    const light = new THREE.Mesh(new THREE.CylinderGeometry(1.35, 0.24, len, 24, 1, true), beamMat);
+    light.position.y = 0.06 + len / 2;
+    head.add(
+      new THREE.Mesh(facetedCyl(0.34, 0.24, 0.32, 0, -0.16), projBody),
+      new THREE.Mesh(facetedCyl(0.37, 0.34, 0.05, 0, 0.025), PORTAL_MATS.blue),
+      new THREE.Mesh(facetedCyl(0.29, 0.29, 0.03, 0, 0.045), lensMat),
+      light,
+    );
+    root.add(head);
+    // pie, cuello y cabeza inclinada: cada uno con su forma
+    colliders.addCircle(fx, fz, 0.52, P.h + 1, standTop + 0.14, 'projector');
+    colliders.addCircle(fx, fz, 0.3, P.h + 1, standTop + 0.4, 'projector');
+    head.updateMatrix();
+    const headGeo = mergeGeometries(head.children.slice(0, 2).map((m) => (m.geometry.index ? m.geometry.toNonIndexed() : m.geometry).clone().applyMatrix4(head.matrix).translate(-fx, 0, -fz)));
+    colliders.addMesh(fx, 0, fz, 1, 0, meshShape(headGeo.attributes.position.array.slice()), 'projector');
+  }
   animated.push((t) => { globe.rotation.y = t * 0.25; orbit1.rotation.z = t * 0.6; orbit2.rotation.z = -t * 0.45; globe.position.y = P.h + 8.5 + Math.sin(t) * 0.25; });
   // plaza sign
   const plazaSign = makeSign(['PLAZA CENTRAL', 'Tu punto de partida'], 7, 1.75);
   plazaSign.position.set(P.x, P.h + 3.6, P.z + 7.2);
   root.add(plazaSign);
   // lamps + banners + planters
-  for (let i = 0; i < 14; i++) {
-    const a = (i / 14) * Math.PI * 2 + 0.11;
+  // ángulos elegidos para dejar libres los portales y los caminos (al menos 5 m de cada uno)
+  [20, 38, 56, 74, 107.5, 142, 154, 206, 222, 271.5, 320, 331].forEach((deg, i) => {
+    const a = (deg * Math.PI) / 180;
     const l = lampPost(i % 2 ? 0x35e0ff : 0xffb020);
     l.position.set(P.x + Math.cos(a) * 27.5, P.h, P.z + Math.sin(a) * 27.5);
     root.add(l);
-    colliders.addCircle(l.position.x, l.position.z, 0.3, P.h - 1, P.h + 4.5, 'lamp');
-  }
+    colliders.addCircle(l.position.x, l.position.z, 0.34, P.h - 1, P.h + 1.8, 'lamp');
+    colliders.addCircle(l.position.x, l.position.z, 0.12, P.h - 1, P.h + 5.2, 'lamp');
+  });
   const bannerCols = [0x35e0ff, 0x8b5cf6, 0xffb020, 0x22c55e];
   const banners = [];
   for (let i = 0; i < 8; i++) {
     const a = (i / 8) * Math.PI * 2 + 0.4;
-    const b = banner('EPIC', bannerCols[i % 4]);
+    const b = banner(i % 2 === 0, bannerCols[i % 4]);
     b.position.set(P.x + Math.cos(a) * 18.5, P.h, P.z + Math.sin(a) * 18.5);
-    b.rotation.y = -a;
-    b.userData.dynamic = true;
+    b.rotation.y = Math.atan2(-Math.cos(a), -Math.sin(a)); // de frente al centro de la plaza
     root.add(b);
     banners.push(b);
-    colliders.addCircle(b.position.x, b.position.z, 0.25, P.h - 1, P.h + 8, 'pole');
+    colliders.addCircle(b.position.x, b.position.z, 0.28, P.h - 1, P.h + 8, 'pole');
   }
-  animated.push((t) => banners.forEach((b, i) => { b.userData.cloth.rotation.y = Math.sin(t * 1.4 + i) * 0.18; }));
+  let bannerWave = true;
+  animated.push((t) => { if (bannerWave) banners.forEach((b, i) => waveBanner(b.userData.cloth.geometry, t, i, 0.06)); });
   const planterMat = white();
   for (let i = 0; i < 6; i++) {
     const a = (i / 6) * Math.PI * 2;
@@ -383,7 +987,7 @@ export function buildDistricts(scene, colliders, kenney) {
   const padRing = new THREE.Mesh(new THREE.TorusGeometry(3, 0.08, 6, 64), emissive(0x35e0ff, 2));
   padRing.rotation.x = Math.PI / 2; padRing.position.set(SPAWN.x, sh + 0.22, SPAWN.z);
   root.add(pad, padRing);
-  colliders.addCircle(SPAWN.x, SPAWN.z, 3.1, sh - 1, sh + 0.2, 'spawn');
+  colliders.addCircle(SPAWN.x, SPAWN.z, 3, sh - 1, sh + 0.2, 'spawn');
 
   // ---------------- NEURO DISTRICT
   const N = PADS.neuro;
@@ -398,8 +1002,9 @@ export function buildDistricts(scene, colliders, kenney) {
   domeMesh.renderOrder = 3;
   root.add(domeMesh);
   const frameMat = white();
-  const baseRing = new THREE.Mesh(new THREE.TorusGeometry(dome.r, 0.35, 8, 96), frameMat);
-  baseRing.rotation.x = Math.PI / 2; baseRing.position.set(dome.x, dome.y + 0.2, dome.z);
+  // abierto en la entrada, igual que el domo y su collider
+  const baseRing = new THREE.Mesh(new THREE.TorusGeometry(dome.r, 0.35, 8, 96, Math.PI * 2 - gap), frameMat);
+  baseRing.rotation.set(Math.PI / 2, 0, gap / 2); baseRing.position.set(dome.x, dome.y + 0.2, dome.z);
   root.add(baseRing);
   for (let k = 0; k < 12; k++) {
     const phi = (k / 12) * Math.PI * 2;
@@ -432,21 +1037,24 @@ export function buildDistricts(scene, colliders, kenney) {
   const pedRing = new THREE.Mesh(new THREE.TorusGeometry(3.25, 0.09, 6, 64), emissive(0xffb020, 2));
   pedRing.rotation.x = Math.PI / 2; pedRing.position.set(dome.x, dome.y + 1.02, dome.z);
   root.add(ped, pedRing);
-  colliders.addCircle(dome.x, dome.z, 3.6, dome.y - 1, dome.y + 1.0, 'ped');
+  colliders.addCircle(dome.x, dome.z, 3.53, dome.y - 1, dome.y + 0.45, 'ped');
+  colliders.addCircle(dome.x, dome.z, 3.2, dome.y - 1, dome.y + 1, 'ped');
   // district entrance arch from the path
   root.add(arch(0xffb020, 'DISTRITO NEURO', 'Neurociencia · Bienestar', colliders, N.x + N.r - 1, N.z + 2, Math.PI / 2, N.h, 9));
   const neuroGate = { key: 'plaza', color: 0x35e0ff, x: N.x + N.r - 1, z: N.z + 2, rotY: Math.PI / 2, baseY: N.h, width: 9 };
   // neuron trees + electric pylons
-  const treeSpots = [[-96, -6], [-100, 30], [-150, 26], [-152, -22], [-112, -40], [-84, 22]];
+  // dos arcos simétricos respecto al eje entrada-domo, alternando tipos; lejos de portales y recorridos
+  const treeSpots = [[-92, -22, 'B'], [-112, -32, 'A'], [-146, -28, 'B'], [-92, 26, 'A'], [-112, 36, 'B'], [-146, 32, 'A']];
   const nts = [];
-  treeSpots.forEach(([x, z], i) => {
-    const nt = neuronTree(i % 2 ? 0x35e0ff : 0xb57bff, rnd);
+  treeSpots.forEach(([x, z, kind], i) => {
+    const nt = kind === 'A' ? neuronTreeA(mulberry32(31 + i * 7)) : neuronTreeB(mulberry32(53 + i * 11));
     nt.position.set(x, N.h, z);
     root.add(nt);
     nts.push(nt);
-    colliders.addCircle(x, z, 0.5, N.h - 1, N.h + 4, 'ntree');
+    if (kind === 'A') colliders.addCircle(x, z, 0.32, N.h - 1, N.h + 4.2, 'ntree');
+    else colliders.addCircle(x, z, 0.42, N.h - 1, N.h + 2.7, 'ntree');
   });
-  animated.push((t) => nts.forEach((n, i) => { n.children[0].scale.setScalar(1 + Math.sin(t * 3 + i) * 0.12); }));
+  animated.push((t) => nts.forEach((n, i) => n.userData.tick(t, i * 0.37)));
   // banner-sign over district
   const ns = makeSign(['NEUROAVENTURA', 'Misión: Señal Vital'], 8, 2, { border: '#ffb020', sub: '#ffe3a1' });
   ns.position.set(dome.x, dome.y + 16.5, dome.z);
@@ -469,34 +1077,19 @@ export function buildDistricts(scene, colliders, kenney) {
   slit.position.set(0, 8.5, 0); slit.rotation.z = 0.5; slit.scale.set(1, 1, 0.98);
   obs.add(cyl, cap);
   obs.position.set(S.x - 8, S.h, S.z - 6);
+  dressSteamHouse(obs, colliders, Math.atan2(-0.3, 0.95));
   root.add(obs);
-  const gears = [];
-  const gMat = new THREE.MeshStandardMaterial({ color: 0xffb020, metalness: 0.6, roughness: 0.35 });
-  const gMat2 = new THREE.MeshStandardMaterial({ color: 0xc7b8f5, metalness: 0.5, roughness: 0.35 });
-  [[5, 16, 0, 9, 10], [3.2, 11, 7.6, 12.6, 10], [2.2, 9, -5.6, 14, 10]].forEach(([R, teeth, ox, oy, oz], i) => {
-    const gear = new THREE.Mesh(gearGeometry(R, teeth, 0.9), i % 2 ? gMat2 : gMat);
-    gear.position.set(S.x + 6 + ox * 0.6, S.h + oy, S.z + oz - 18);
-    gear.castShadow = true;
-    gear.userData.speed = (i % 2 ? -1 : 1) * (1.6 / R);
-    gear.userData.dynamic = true;
-    root.add(gear);
-    gears.push(gear);
-  });
-  const tower = new THREE.Mesh(new THREE.BoxGeometry(3, 14, 3), white());
-  tower.position.set(S.x + 6, S.h + 7, S.z - 8);
-  root.add(tower);
-  const coil = new THREE.Group();
-  const coilBase = new THREE.Mesh(new THREE.CylinderGeometry(0.6, 1.2, 9, 12), new THREE.MeshStandardMaterial({ color: 0x5b4b8a, metalness: 0.5, roughness: 0.3 }));
-  coilBase.position.y = 4.5;
-  const coilTop = new THREE.Mesh(new THREE.TorusGeometry(1.5, 0.55, 12, 24), new THREE.MeshStandardMaterial({ color: 0xdddddd, metalness: 0.9, roughness: 0.2 }));
-  coilTop.position.y = 9.5; coilTop.rotation.x = Math.PI / 2;
-  const spark = new THREE.Mesh(new THREE.IcosahedronGeometry(0.8, 1), emissive(0xd9c6ff, 3));
-  spark.position.y = 9.5;
-  spark.userData.dynamic = true;
-  coil.add(coilBase, coilTop, spark);
-  coil.position.set(S.x + 12, S.h, S.z + 8);
+  const machine = steamMachine(S.x + 8, S.h, S.z - 8, colliders);
+  root.add(machine);
+  // torre de energía (bobina Tesla), apartada del camino hacia la Sala de Matemáticas
+  const coil = teslaTower();
+  coil.position.set(S.x + 16, S.h, S.z + 6);
   root.add(coil);
-  animated.push((t) => { gears.forEach((g) => { g.rotation.z = t * g.userData.speed; }); spark.scale.setScalar(0.8 + Math.random() * 0.5); });
+  const padTris = new THREE.CylinderGeometry(3.1, 3.5, 0.45, 6).translate(0, 0.225, 0).toNonIndexed().attributes.position.array.slice();
+  colliders.addMesh(coil.position.x, S.h, coil.position.z, 1, 0, meshShape(padTris), 'tesla');
+  for (const leg of coil.userData.legs) colliders.addCircle(coil.position.x + leg.x, coil.position.z + leg.z, 0.42, S.h + 0.2, S.h + 6, 'tesla');
+  colliders.addCircle(coil.position.x, coil.position.z, 0.8, S.h + 0.2, S.h + 5, 'tesla');
+  animated.push((t) => { machine.userData.tick(t); coil.userData.tick(t); });
 
   // ---------------- ENGLISH (coming soon) — village of Kenney buildings
   const E = PADS.english;
@@ -602,6 +1195,12 @@ export function buildDistricts(scene, colliders, kenney) {
   root.userData.baked = bakeStatic(root);
   return {
     root, dome, locked, gates, neuroGate, steamGate,
+    // calidad baja: panel fijo
+    setBannerWave(on) {
+      if (on === bannerWave) return;
+      bannerWave = on;
+      if (!on) banners.forEach((b) => waveBanner(b.userData.cloth.geometry, 0, 0, 0));
+    },
     update(t, cam) {
       for (const m of holoMats) m.uniforms.time.value = t;
       for (const f of animated) f(t, cam);

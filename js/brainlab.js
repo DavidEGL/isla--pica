@@ -6,7 +6,7 @@ import { holoMaterial } from './districts.js';
 import { buildBrain } from './neuroparts.js';
 import { makeSign, softSpriteTexture, mulberry32, bakeStatic } from './util.js';
 import { labelSprite } from './mission.js';
-import { Portal, portalMaterial, fadePortal } from './portals.js';
+import { Portal, ringPortal, addRingColliders, fadePortal } from './portals.js';
 
 export const LAB = { x: 0, y: 60, z: -700 };           // world origin of the interior (far from the island)
 const N = PADS.neuro;
@@ -14,7 +14,6 @@ export const LAB_DOOR = { x: -109, z: -12, y: N.h };     // portal in the Neuro 
 export const LAB_RETURN = { x: -100.5, z: -12, yaw: Math.PI / 2 };
 const EXIT_L = { x: -6.6, z: 6.6 };
 const SPAWN_L = { x: 0, z: -1.5 };
-const GAP = 0.62;                                         // bottom opening of the ring portals (radians, half angle)
 
 const ZONES = [
   { key: 'frontal', title: 'Lóbulo frontal', name: 'LÓBULO FRONTAL', sub: 'Planear · Decidir · Moverse', emoji: '💡', color: 0xffb020, x: 0, y: 3, z: -34, glow: [0, 0.35, 0.85] },
@@ -58,29 +57,6 @@ const TEXT = {
 const _p = new THREE.Vector3(), _t = new THREE.Vector3();
 const hex = (c) => '#' + new THREE.Color(c).getHexString();
 const wait = (ms) => new Promise((r) => setTimeout(r, ms));
-
-// Horseshoe-shaped ring portal (open at the floor so the player walks through cleanly).
-function ringPortal(color, R) {
-  const g = new THREE.Group();
-  const arc = Math.PI * 2 - GAP * 2;
-  const ring = new THREE.Mesh(new THREE.TorusGeometry(R, 0.34, 12, 72, arc), new THREE.MeshStandardMaterial({ color: 0xffffff, roughness: 0.35, metalness: 0.15 }));
-  ring.rotation.z = -Math.PI / 2 + GAP;
-  const glow = new THREE.Mesh(new THREE.TorusGeometry(R - 0.36, 0.09, 6, 72, arc), new THREE.MeshBasicMaterial({ color, toneMapped: false }));
-  glow.rotation.z = ring.rotation.z;
-  const mat = portalMaterial(color, { shape: 'circle', color2: 0xffffff });
-  const disc = new THREE.Mesh(new THREE.CircleGeometry(R - 0.3, 56), mat);
-  disc.renderOrder = 4;
-  g.add(ring, glow, disc);
-  for (const s of [-1, 1]) {
-    const cap = new THREE.Mesh(new THREE.SphereGeometry(0.42, 14, 10), new THREE.MeshStandardMaterial({ color: 0xffffff, roughness: 0.35 }));
-    cap.position.set(s * R * Math.sin(GAP), -R * Math.cos(GAP), 0);
-    g.add(cap);
-  }
-  g.userData.mat = mat;
-  g.userData.lift = R * Math.cos(GAP); // center height above the floor
-  g.userData.half = R * Math.sin(GAP); // half width of the opening at the floor
-  return g;
-}
 
 function glyphSprite(ch, color, size = 1.2) {
   const c = document.createElement('canvas');
@@ -250,8 +226,7 @@ export class BrainLab {
     ex.rotation.y = th;
     this.root.add(ex);
     this.exitMat = ex.userData.mat;
-    const lx = Math.cos(th), lz = -Math.sin(th);
-    for (const s of [-1, 1]) this._addCircle(EXIT_L.x + lx * s * ex.userData.half, EXIT_L.z + lz * s * ex.userData.half, 0.45, -1, 5);
+    addRingColliders(this.col, ex, LAB.x + EXIT_L.x, LAB.z + EXIT_L.z, th, LAB.y, 'lab');
     this.exitPortal = new Portal({ x: LAB.x + EXIT_L.x, z: LAB.z + EXIT_L.z, nx: Math.sin(th), nz: Math.cos(th), halfW: ex.userData.half - 0.35, y0: LAB.y - 1, y1: LAB.y + 3, twoSided: true });
     const exLab = labelSprite(['SALIDA', 'Distrito Neuro'], '#35e0ff', 3.0);
     exLab.position.set(EXIT_L.x, 6.4, EXIT_L.z);
@@ -560,21 +535,22 @@ export class BrainLab {
     g.rotation.y = Math.PI / 2;
     this.scene.add(g);
     this.doorMat = g.userData.mat;
-    for (const s of [-1, 1]) this.col.addCircle(E.x, E.z + s * g.userData.half, 0.45, E.y - 1, E.y + 6, 'labdoor');
+    addRingColliders(this.col, g, E.x, E.z, Math.PI / 2, E.y, 'labdoor');
     const floorRing = new THREE.Mesh(new THREE.TorusGeometry(4.2, 0.12, 6, 64), this._glowMat(0xff6fd8, 1.8));
     floorRing.rotation.x = Math.PI / 2;
-    floorRing.position.set(E.x, E.y + 0.06, E.z);
+    floorRing.scale.z = 0.14; // aro plano: se pisa sin que atraviese los pies
+    floorRing.position.set(E.x, E.y + 0.14, E.z); // sobre la base del portal
     this.scene.add(floorRing);
     const bm = holoMaterial(0xff8fd0, { intensity: 1.1, lines: 24 });
     const bm2 = holoMaterial(0xffc0e0, { intensity: 1.0, lines: 24 });
     this.doorHolo = [bm, bm2];
     const brain = buildBrain(bm, bm2);
     brain.scale.setScalar(1.5);
-    brain.position.set(E.x, E.y + 8.0, E.z);
+    brain.position.set(E.x, E.y + 8.8, E.z);
     this.scene.add(brain);
     this.doorBrain = brain;
     const sign = makeSign(['VIAJE AL CEREBRO', '¡Cruza el portal!'], 6.4, 1.6, { border: '#ff6fd8', sub: '#ffd0f0' });
-    sign.position.set(E.x, E.y + 10.9, E.z);
+    sign.position.set(E.x, E.y + 11.7, E.z);
     sign.rotation.y = Math.PI / 2;
     this.scene.add(sign);
     this.entrancePortal = new Portal({ x: E.x, z: E.z, nx: 1, nz: 0, halfW: g.userData.half - 0.35, y0: E.y - 1, y1: E.y + 3, twoSided: true });
