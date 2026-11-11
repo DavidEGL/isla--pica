@@ -1,6 +1,6 @@
 // Third-person follow camera with smoothing and collision avoidance.
 import * as THREE from 'three';
-import { heightAt } from './terrain.js';
+import { surfaceAt as heightAt } from './terrain.js';
 import { clamp, damp, dampAngle } from './util.js';
 
 const _list = [];
@@ -43,7 +43,8 @@ export class FollowCam {
     for (let i = 1; i <= steps; i++) {
       const d = (i / steps) * this.wantDist;
       const px = this.target.x + dir.x * d, py = this.target.y + dir.y * d, pz = this.target.z + dir.z * d;
-      if (heightAt(px, pz) + 0.4 > py || this.col.pointBlocked(px, py, pz, _list)) { allowed = Math.max(1.2, d - 0.45); break; }
+      if (Math.max(heightAt(px, pz), 0) + 0.4 > py || this.col.pointBlocked(px, py, pz, _list)) { // el agua cuenta como suelo: la cámara no se sumerge
+        allowed = Math.max(1.2, d - 0.45); break; }
     }
     const lam = allowed < this.curDist ? 30 : 4;
     this.curDist = damp(this.curDist, allowed, lam, dt);

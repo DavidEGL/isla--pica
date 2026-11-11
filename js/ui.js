@@ -1,5 +1,5 @@
 // HUD, dialogue, minimap, toasts, menus.
-import { WORLD, heightAt, pathMask, PADS, riverDist } from './terrain.js';
+import { WORLD, heightAt, pathMask, PADS, riverDist, BRIDGE } from './terrain.js';
 import { clamp } from './util.js';
 
 const $ = (id) => document.getElementById(id);
@@ -12,6 +12,7 @@ export class UI {
     this.markers = [];       // {x,z,color,label,kind}
     this.objectiveTarget = null;
     this._buildMapBase();
+    this._loadMapArt();
     this._drawFace();
     $('dialog').addEventListener('click', () => this._advance());
   }
@@ -225,6 +226,10 @@ export class UI {
     c.width = c.height = S;
     const g = c.getContext('2d');
     const img = g.createImageData(S, S);
+    // agua real (mar, río y lago) para pintarla sobre la ilustración del minimapa
+    const wc = document.createElement('canvas');
+    wc.width = wc.height = S;
+    const wg = wc.getContext('2d'), water = wg.createImageData(S, S);
     for (let j = 0; j < S; j++) for (let i = 0; i < S; i++) {
       const x = -WORLD / 2 + (i + 0.5) / S * WORLD, z = -WORLD / 2 + (j + 0.5) / S * WORLD;
       const h = heightAt(x, z);
@@ -235,8 +240,16 @@ export class UI {
       if (h > 0 && pathMask(x, z) > 0.5) { r = 245; gg = 228; b = 190; }
       const o = (j * S + i) * 4;
       img.data[o] = r; img.data[o + 1] = gg; img.data[o + 2] = b; img.data[o + 3] = 255;
+      if (h < 0) {
+        // turquesa de la orilla, algo más profundo al alejarse, con borde suave
+        const k = clamp(-h / 3, 0, 0.5);
+        water.data[o] = 40 - 39 * k; water.data[o + 1] = 205 - 68 * k; water.data[o + 2] = 215 - 43 * k;
+        water.data[o + 3] = clamp(-h / 0.4, 0, 1) * 255;
+      }
     }
     g.putImageData(img, 0, 0);
+    wg.putImageData(water, 0, 0);
+    this.mapWater = wc;
     const toPx = (v) => (v + WORLD / 2) / WORLD * S;
     const padCols = { plaza: '#ffffff', neuro: '#ffcf70', steam: '#c4a8ff', english: '#9cc4ff', tech: '#8ef0b2' };
     for (const k in PADS) {
@@ -247,21 +260,59 @@ export class UI {
       g.globalAlpha = 1;
     }
     this.mapBase = c;
-    this.mapS = S;
+  }
+  // ilustración del mapa: el mapa grande la usa tal cual y el minimapa con el agua y el puente reales encima
+  _loadMapArt() {
+    this._mapArt = new Image();
+    this._mapArt.onload = () => {
+      this._buildMiniArt(this._mapArt);
+      if (!$('mapfull').classList.contains('hidden') && this._bigArgs) this.drawBigMap(...this._bigArgs);
+    };
+    this._mapArt.src = './assets/maps/epic-island-buildings.jpg';
+  }
+  _buildMiniArt(art) {
+    const S = art.naturalWidth;
+    const c = document.createElement('canvas');
+    c.width = c.height = S;
+    const g = c.getContext('2d');
+    g.drawImage(art, 0, 0, S, S);
+    // el agua real solo se pinta donde la ilustración muestra tierra: el mar conserva sus olas
+    const M = this.mapWater.width;
+    const clip = document.createElement('canvas');
+    clip.width = clip.height = M;
+    const cg = clip.getContext('2d');
+    cg.drawImage(art, 0, 0, M, M);
+    const seen = cg.getImageData(0, 0, M, M).data;
+    const water = this.mapWater.getContext('2d').getImageData(0, 0, M, M);
+    for (let o = 0; o < seen.length; o += 4) {
+      const r = seen[o], gr = seen[o + 1], b = seen[o + 2];
+      if ((b > r * 1.1 && b > gr * 0.85) || Math.min(r, gr, b) > 200) water.data[o + 3] = 0; // azul o turquesa, o espuma blanca
+    }
+    cg.putImageData(water, 0, 0);
+    g.drawImage(clip, 0, 0, S, S);
+    const toPx = (v) => (v + WORLD / 2) / WORLD * S;
+    const w = BRIDGE.w / WORLD * S;
+    g.lineCap = 'butt';
+    for (const [color, lw] of [['#7a5636', w * 1.35], ['#c8955f', w]]) {
+      g.strokeStyle = color; g.lineWidth = lw;
+      g.beginPath(); g.moveTo(toPx(BRIDGE.ax), toPx(BRIDGE.az)); g.lineTo(toPx(BRIDGE.bx), toPx(BRIDGE.bz)); g.stroke();
+    }
+    this.miniArt = c;
   }
   drawMinimap(player, extra) {
     const c = $('mm'), g = c.getContext('2d');
     const W = c.width;
-    const S = this.mapS;
+    const base = this.miniArt || this.mapBase; // el mapa dibujado queda de respaldo hasta que cargue la ilustración
+    const S = base.width;
     const viewM = 150; // meters across
     const scale = W / (viewM / WORLD * S);
     g.save();
-    g.fillStyle = '#0e5ea9'; g.fillRect(0, 0, W, W);
+    g.fillStyle = this.miniArt ? '#018aab' : '#0e5ea9'; g.fillRect(0, 0, W, W);
     const px = (player.pos.x + WORLD / 2) / WORLD * S, pz = (player.pos.z + WORLD / 2) / WORLD * S;
     g.translate(W / 2, W / 2);
     g.scale(scale, scale);
     g.translate(-px, -pz);
-    g.drawImage(this.mapBase, 0, 0);
+    g.drawImage(base, 0, 0);
     g.restore();
     const toMini = (x, z) => [W / 2 + (x - player.pos.x) / viewM * W, W / 2 + (z - player.pos.z) / viewM * W];
     // markers
@@ -310,39 +361,51 @@ export class UI {
     g.restore();
   }
   drawBigMap(player, extra) {
+    this._bigArgs = [player, extra];
     const c = $('bigmap'), g = c.getContext('2d');
-    const W = c.width;
-    g.drawImage(this.mapBase, 0, 0, W, W);
+    const W = c.width, k = W / 1000;
+    const art = this._mapArt;
+    g.drawImage(art.complete && art.naturalWidth ? art : this.mapBase, 0, 0, W, W);
     const toP = (x, z) => [(x + WORLD / 2) / WORLD * W, (z + WORLD / 2) / WORLD * W];
-    g.textAlign = 'center'; g.textBaseline = 'middle';
+    // Names sit below the illustrated buildings; indicators keep world coordinates.
+    const layout = {
+      'Plaza Central': [50, 60], 'Distrito Neuro': [27, 55], 'Distrito STEAM': [36, 35],
+      'English (próx.)': [59, 35], 'Technology (próx.)': [76, 55],
+      'Mirador': [39, 75], 'Viaje al Cerebro': [27, 57.8],
+      'Sala de Matemáticas': [36, 37.8], 'Sala de Retos': [27, 60.6],
+    };
+    const stage = c.parentElement;
+    let labels = stage.querySelector('.map-labels');
+    if (!labels) { labels = document.createElement('div'); labels.className = 'map-labels'; stage.append(labels); }
+    labels.replaceChildren();
     for (const m of this.markers) {
-      if (m.hidden) continue;
-      const [x, y] = toP(m.x, m.z);
-      g.fillStyle = m.color; g.strokeStyle = '#fff'; g.lineWidth = 4;
-      g.beginPath(); g.arc(x, y, 13, 0, Math.PI * 2); g.fill(); g.stroke();
-      if (m.label) { g.fillStyle = '#0b1b3a'; g.font = '900 15px Nunito, sans-serif'; g.fillText(m.label, x, y + 1); }
-      if (m.name) {
-        g.font = '900 17px Nunito, sans-serif';
-        g.lineWidth = 5; g.strokeStyle = 'rgba(11,27,58,.85)';
-        g.strokeText(m.name, x, y + 28); g.fillStyle = '#fff'; g.fillText(m.name, x, y + 28);
-      }
+      const slot = layout[m.name];
+      if (m.hidden || !slot) continue;
+      const label = document.createElement('div'); label.className = 'map-zone-caption';
+      label.style.left = slot[0] + '%'; label.style.top = slot[1] + '%';
+      if (m.name === 'Viaje al Cerebro') label.style.top = 'calc(55% + var(--caption-step))';
+      if (m.name === 'Sala de Retos') label.style.top = 'calc(55% + var(--caption-step) + var(--caption-step))';
+      if (m.name === 'Sala de Matemáticas') label.style.top = 'calc(35% + var(--caption-step))';
+      label.textContent = m.name.replace('English (próx.)', 'Distrito English').replace('Technology (próx.)', 'Distrito Technology');
+      if (m.name.startsWith('Sala ') || m.name === 'Viaje al Cerebro') label.classList.add('minor');
+      labels.append(label);
     }
     if (extra && extra.crystals) {
-      g.fillStyle = '#7ff6ff';
-      for (const cr of extra.crystals) if (!cr.taken) { const [x, y] = toP(cr.x, cr.z); g.beginPath(); g.arc(x, y, 4, 0, Math.PI * 2); g.fill(); }
+      g.fillStyle = '#7ff6ff'; g.strokeStyle = '#fff'; g.lineWidth = 2 * k;
+      for (const cr of extra.crystals) if (!cr.taken) { const [x, y] = toP(cr.x, cr.z); g.beginPath(); g.arc(x, y, 9 * k, 0, Math.PI * 2); g.fill(); g.stroke(); }
+      const t = extra.crystals.filter((cr) => cr.taken).length;
+      $('map-crystals').textContent = `${t} / ${extra.crystals.length}`;
     }
+    $('map-objective').textContent = $('obj-text').textContent || '—';
     if (this.objectiveTarget) {
       const [x, y] = toP(this.objectiveTarget.x, this.objectiveTarget.z);
-      g.fillStyle = '#ffb020'; g.strokeStyle = '#fff'; g.lineWidth = 4;
-      g.beginPath(); g.moveTo(x, y - 18); g.lineTo(x + 13, y); g.lineTo(x, y + 18); g.lineTo(x - 13, y); g.closePath(); g.fill(); g.stroke();
+      g.fillStyle = '#ffad34'; g.strokeStyle = '#fff'; g.lineWidth = 3 * k;
+      g.beginPath(); g.moveTo(x, y - 18 * k); g.lineTo(x + 13 * k, y); g.lineTo(x, y + 18 * k); g.lineTo(x - 13 * k, y); g.closePath(); g.fill(); g.stroke();
     }
     const [x, y] = toP(player.pos.x, player.pos.z);
     g.save(); g.translate(x, y); g.rotate(-player.yaw + Math.PI);
     g.fillStyle = '#fff'; g.strokeStyle = '#0b1b3a'; g.lineWidth = 4;
     g.beginPath(); g.moveTo(0, -20); g.lineTo(13, 14); g.lineTo(0, 7); g.lineTo(-13, 14); g.closePath(); g.fill(); g.stroke();
     g.restore();
-    $('map-legend').innerHTML = [
-      ['#ffb020', 'Objetivo'], ['#ffffff', 'Tú'], ['#7ff6ff', 'Cristales'], ['#ffcf70', 'Distrito Neuro'], ['#c4a8ff', 'STEAM'], ['#9cc4ff', 'English'], ['#8ef0b2', 'Technology'],
-    ].map(([c2, l]) => `<span><i style="background:${c2}"></i>${l}</span>`).join('');
   }
 }

@@ -1,6 +1,7 @@
 // Bright "Laboratorio EpicGroup" look shared by the interiors: pearl floors with cyan/gold light lines,
 // glass hologram capsules, planters, slogan panels and a sunny sky with floating islands.
 import * as THREE from 'three';
+import { mergeGeometries } from 'three/addons/utils/BufferGeometryUtils.js';
 import { mulberry32, roundRect } from './util.js';
 
 export const SKY = { top: 0x7cc4ff, mid: 0xcfeaff, low: 0xfff1dc, fog: 0xdff0ff };
@@ -129,6 +130,103 @@ export function floatingIslands(seed = 9, n = 16, r0 = 230, r1 = 330) {
 }
 
 // Planter with a rounded bush and a few flowers
+// ------------------------------------------------------------ piezas de los portales
+export const PORTAL_MATS = {
+  body: new THREE.MeshStandardMaterial({ color: 0xf1f5f8, roughness: 0.5, metalness: 0.05 }),
+  stone: new THREE.MeshStandardMaterial({ color: 0xa9b7c3, roughness: 0.7, metalness: 0.1 }),
+  blue: new THREE.MeshStandardMaterial({ color: 0x2f7fb8, roughness: 0.45, metalness: 0.2 }),
+  sky: new THREE.MeshStandardMaterial({ color: 0x8fd6f2, roughness: 0.4, metalness: 0.1 }),
+};
+// polígono (x,y) con fondo en z, centrado
+export const prism = (pts, depth) => {
+  const g = new THREE.ExtrudeGeometry(new THREE.Shape(pts.map(([x, y]) => new THREE.Vector2(x, y))), { depth, bevelEnabled: false });
+  g.translate(0, 0, -depth / 2);
+  return g;
+};
+export const facetedCyl = (rTop, rBottom, h, x, y, z = 0) => {
+  const g = new THREE.CylinderGeometry(rTop, rBottom, h, 8).toNonIndexed();
+  g.computeVertexNormals();
+  g.translate(x, y, z);
+  return g;
+};
+
+// Medidas del arco de distrito para un ancho entre centros de pilar. W: media abertura; t: grosor; d: fondo;
+// yS: altura donde empieza la curva; Hi y H: altura interior y exterior; u: escala de los detalles.
+export const gateArch = (width) => ({ W: width / 2 - 0.55, t: 1.1, d: 0.88, yS: 4, Hi: 6.6, H: 8.35, u: 3.67, slabZ: 1.5, slabH: 0.12 });
+
+// Arco facetado con origen en el suelo; glow es el material de la línea de luz interior.
+export function gateArchFrame(glow, width) {
+  const { W, t, d, yS, Hi, H, u, slabZ, slabH } = gateArch(width);
+  const inner = (a) => [W * Math.cos(a), yS + (Hi - yS) * Math.sin(a)];
+  const outer = (a, grow = 0) => [(W + t + grow) * Math.cos(a), yS + (H + grow - yS) * Math.sin(a)];
+  const lerp2 = (p, q, f) => [p[0] + (q[0] - p[0]) * f, p[1] + (q[1] - p[1]) * f];
+  const parts = { body: [], stone: [], blue: [], sky: [], glow: [] };
+  const end = 1.33; // ángulo donde terminan los bloques y empieza la clave
+  for (const s of [-1, 1]) {
+    const m = (pts) => pts.map(([x, y]) => [x * s, y]);
+    // pilar, pie y placa frontal
+    parts.body.push(prism(m([[W, 0], [W + t, 0], [W + t, yS], [W, yS]]), d));
+    parts.stone.push(prism(m([[W - u * 0.06, 0], [W + t + u * 0.06, 0], [W + t + u * 0.03, u * 0.2], [W - u * 0.03, u * 0.2]]), d + u * 0.08));
+    parts.stone.push(prism(m([[W + u * 0.07, u * 0.28], [W + t - u * 0.07, u * 0.28], [W + t - u * 0.07, yS - u * 0.08], [W + u * 0.07, yS - u * 0.08]]), d + u * 0.05));
+    parts.blue.push(prism(m([[W + t, u * 0.2], [W + t + u * 0.04, u * 0.2], [W + t + u * 0.04, yS], [W + t, yS]]), d));
+    // piedras incrustadas en el costado del pilar
+    for (const y of [u * 0.4, u * 0.72]) {
+      const hex = [];
+      for (let k = 0; k < 6; k++) hex.push([W + t + u * 0.04 + Math.cos((k / 6) * Math.PI * 2) * u * 0.055, y + Math.sin((k / 6) * Math.PI * 2) * u * 0.1]);
+      parts.sky.push(prism(m(hex), d * 0.72));
+    }
+    // tres bloques de arco sin juntas: se distinguen por su placa gris; banda azul exterior continua
+    for (let i = 0; i < 3; i++) {
+      const a0 = (i / 3) * end, a1 = ((i + 1) / 3) * end;
+      parts.body.push(prism(m([inner(a0), outer(a0), outer(a1), inner(a1)]), d));
+      parts.blue.push(prism(m([outer(a0), outer(a0, u * 0.04), outer(a1, u * 0.04), outer(a1)]), d));
+      const b0 = a0 + 0.04, b1 = a1 - 0.04;
+      parts.stone.push(prism(m([lerp2(inner(b0), outer(b0), 0.2), lerp2(inner(b0), outer(b0), 0.8), lerp2(inner(b1), outer(b1), 0.8), lerp2(inner(b1), outer(b1), 0.2)]), d + u * 0.05));
+    }
+    // línea de luz por el borde interior, del suelo a la clave
+    const line = u * 0.035;
+    parts.glow.push(prism(m([[W - line, 0], [W, 0], [W, yS], [W - line, yS]]), d * 0.6));
+    const N = 6;
+    for (let i = 0; i < N; i++) {
+      const a0 = (i / N) * Math.PI / 2, a1 = ((i + 1) / N) * Math.PI / 2, p0 = inner(a0), p1 = inner(a1), k = 1 - line / W;
+      parts.glow.push(prism(m([[p0[0] * k, p0[1] - line], p0, p1, [p1[0] * k, p1[1] - line]]), d * 0.6));
+    }
+    // torres junto a los pilares
+    const towerX = W + t + 0.55;
+    parts.stone.push(facetedCyl(0.14, 0.26, 1.15, s * towerX, slabH + 0.575));
+    parts.sky.push(facetedCyl(0.001, 0.17, 0.36, s * towerX, slabH + 1.33));
+  }
+  // clave superior: su borde inferior sigue la curva del arco, sin tapar la línea de luz
+  const keyPts = [];
+  for (let i = 0; i <= 4; i++) keyPts.push(inner(end + ((Math.PI - 2 * end) * i) / 4));
+  const k1 = outer(end);
+  keyPts.push([-k1[0], k1[1] + u * 0.06], [k1[0], k1[1] + u * 0.06]);
+  parts.sky.push(prism(keyPts, d + u * 0.1));
+  // base baja bajo todo el arco, con un borde azul
+  const slabW = 2 * (W + t + 1);
+  parts.body.push(new THREE.BoxGeometry(slabW, slabH, 2 * slabZ).toNonIndexed().translate(0, slabH / 2, 0));
+  parts.blue.push(new THREE.BoxGeometry(slabW + 0.24, 0.05, 2 * slabZ + 0.24).toNonIndexed().translate(0, 0.025, 0));
+  const g = new THREE.Group();
+  for (const k of ['body', 'stone', 'blue', 'sky']) {
+    const mesh = new THREE.Mesh(mergeGeometries(parts[k]), PORTAL_MATS[k]);
+    mesh.castShadow = true;
+    g.add(mesh);
+  }
+  g.add(new THREE.Mesh(mergeGeometries(parts.glow), glow));
+  return g;
+}
+
+// Colliders del arco: una caja por pilar, la base baja (se sube caminando) y las torres.
+export function addGateArchColliders(col, x, z, rot, y, width, tag) {
+  const { W, t, d, H, u, slabZ, slabH } = gateArch(width);
+  const cos = Math.cos(rot), sin = Math.sin(rot), pillarX = W + t / 2, towerX = W + t + 0.55;
+  col.addBox(x, z, W + t + 1, slabZ, rot, y - 1, y + slabH, tag);
+  for (const s of [-1, 1]) {
+    col.addBox(x + cos * s * pillarX, z - sin * s * pillarX, t / 2 + u * 0.06, d / 2 + u * 0.04, rot, y - 1, y + H, tag);
+    col.addCircle(x + cos * s * towerX, z - sin * s * towerX, 0.28, y - 1, y + slabH + 1.5, tag);
+  }
+}
+
 export function planter(rnd = Math.random) {
   const g = new THREE.Group();
   const pot = new THREE.Mesh(new THREE.CylinderGeometry(0.9, 0.7, 0.9, 20), pearlMat());

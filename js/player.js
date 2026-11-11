@@ -1,8 +1,28 @@
 // Third-person character controller + avatar animation (real clips or procedural fallback).
 import * as THREE from 'three';
-import { heightAt, slopeAt, SPAWN } from './terrain.js';
+// el jugador pisa la malla dibujada, no la fórmula del terreno
+import { surfaceAt as heightAt, surfaceSlopeAt as slopeAt, SPAWN, riverDist, LAKE } from './terrain.js';
 import { clamp, damp, dampAngle, lerp, smoothstep } from './util.js';
 
+const FOOT_LIFT = 0.03; // sube el modelo 3 cm (solo visual): evita que los zapatos atraviesen el suelo en pendientes
+const STATIC_POSE = false; // true: sin animaciones, el personaje queda siempre en A-pose (pose de reposo del esqueleto)
+const CLIPS_ONLY = true; // true: los clips se ven tal cual; desactiva las capas procedurales calibradas para los clips viejos
+// salto: fracciones del clip Jump donde los pies despegan y vuelven al suelo, y velocidad para cubrir el vuelo real (~0,66 s)
+const JUMP_TAKEOFF = 0.37, JUMP_LAND = 0.58, JUMP_RATE = 0.7;
+// apertura medida de la punta del pie al apoyar (rad): se corrige para que apunte al frente
+const WALK_TOE_L = 0.39, WALK_TOE_R = 0.375, RUN_TOE_L = 0.48, RUN_TOE_R = 0.36;
+const RUN_TORSO_LEAN = 0.23; // inclinación del torso al correr (rad, ~13°)
+const RUN_HAND_INWARD = 0.21; // al correr, con el brazo adelante, las manos apuntan ~12° hacia el centro (rad)
+const RUN_HAND_OUTWARD = 0.26; // al pasar por la columna y hacia atrás, las manos apuntan ~15° hacia afuera (rad)
+const RUN_HAND_BLEND = 0.52; // el brazo va de 0° (columna) a +30° (adelante) entre afuera y adentro (rad)
+const ARM_MIN_SIDE = 0.35; // al caminar/correr el brazo se separa al menos ~20° del torso (plano lateral), para no rozar el costado
+// pose de vuelo (rad): muslo adelante, rodilla flexionada, brazo abierto respecto a la A-pose de reposo, codo
+const AIR_THIGH = 0.45, AIR_KNEE = 0.9, AIR_ARM = 0.26, AIR_ELBOW = 0.35;
+const airBones = (b) => [b.L.upLeg, b.R.upLeg, b.L.leg, b.R.leg, b.L.arm, b.R.arm, b.L.foreArm, b.R.foreArm].filter(Boolean);
+const ARM_MAX = 0.63; // ángulo máximo hombro (brazo vs eje del torso) al caminar/correr: ~36° (con ARM_MIN_SIDE de 20° deja ~±27° de balanceo)
+const SWIM_LIFT = 0.45; // tendido en horizontal: solo la espalda y la parte alta de la cabeza asoman del agua
+const SWIM_Y = -0.95; // altura de los pies al nadar: la cabeza y los hombros quedan fuera del agua
+const canSwim = (x, z) => riverDist(x, z) < 16 || Math.hypot(x - LAKE.x, z - LAKE.z) < LAKE.r + 5; // río y lago; el mar sigue cerrado
 const P = {
   walk: 2.6, run: 6.2, sprint: 9.2,
   accG: 34, decG: 28, accA: 12,
@@ -10,6 +30,8 @@ const P = {
   step: 0.5, radius: 0.38, height: 1.7,
   dashV: 15, dashT: 0.2, dashCd: 0.9,
   maxSlope: 1.2,
+  swim: 0.55, // velocidad al nadar, respecto a correr
+  swimSprint: 2, // multiplicador de la velocidad de nado con Shift
 };
 
 const _v = new THREE.Vector3(), _q = new THREE.Quaternion(), _q2 = new THREE.Quaternion(), _list = [];
@@ -57,6 +79,17 @@ function extrap(out, a, b, k) {
   return out.copy(a).multiply(_q2);
 }
 
+// Clips de nado (assets/models/swim_clips.json), ya convertidos a los huesos del personaje.
+export function swimClipsFrom(data, scene) {
+  const nodeOf = THREE.PropertyBinding.sanitizeNodeName;
+  if (!scene.getObjectByName(nodeOf(data.hipsNode))) return []; // otro esqueleto: se queda sin ellos
+  return Object.entries(data.clips).map(([name, c]) => {
+    const tracks = Object.entries(c.rot).map(([bone, q]) => new THREE.QuaternionKeyframeTrack(nodeOf(bone) + '.quaternion', c.times, q));
+    tracks.push(new THREE.VectorKeyframeTrack(nodeOf(data.hipsNode) + '.position', c.times, c.hipsPos));
+    return new THREE.AnimationClip(name, c.duration, tracks);
+  });
+}
+
 export class Avatar {
   constructor(gltf, opts = {}) {
     this.root = new THREE.Group();
@@ -84,16 +117,24 @@ export class Avatar {
     model.scale.multiplyScalar(s);
     model.updateMatrixWorld(true);
     box.setFromObject(model);
-    model.position.y -= box.min.y;
+    model.position.y -= box.min.y - FOOT_LIFT;
     model.position.x -= (box.min.x + box.max.x) / 2;
     model.position.z -= (box.min.z + box.max.z) / 2;
     model.updateMatrixWorld(true);
     this.bones = findBones(model);
+    // pose de reposo (bind pose) del esqueleto: es el standby estático (columna, cuello y cabeza rectos, pies planos)
+    this.restPose = new Map(this.bones.all.map((b) => [b, { q: b.quaternion.clone(), p: b.position.clone() }]));
+    this.spineChain = ['spine', 'spine01', 'spine02'].map((n) => this.bones.all.find((b) => stripName(b.name) === n)).filter(Boolean);
     // detect facing from foot->toe direction
     let yaw = opts.yaw ?? null;
     if (yaw === null) {
       const f = this.bones.L.foot, t = this.bones.L.toe;
-      if (f && t) {
+      const lu = this.bones.L.upLeg, ru = this.bones.R.upLeg;
+      if (lu && ru) {
+        // eje de caderas (izq - der): simétrico; el toe-out de los pies no debe torcer el frente
+        const l = lu.getWorldPosition(new THREE.Vector3()).sub(ru.getWorldPosition(new THREE.Vector3()));
+        yaw = Math.hypot(l.x, l.z) > 1e-6 ? Math.atan2(l.z, l.x) : 0;
+      } else if (f && t) {
         const a = f.getWorldPosition(new THREE.Vector3()), b = t.getWorldPosition(new THREE.Vector3());
         const d = b.sub(a);
         d.y = 0;
@@ -114,7 +155,8 @@ export class Avatar {
     this.mixer = new THREE.AnimationMixer(model);
     const clips = (gltf.animations || []).map((c) => c.clone());
     const hipsName = this.bones.hips ? this.bones.hips.name : null;
-    for (const c of clips) this._inPlace(c, hipsName);
+    // Idle conserva el balanceo de cadera: fijarlo haría deslizar los pies
+    for (const c of clips) if (!/idle|stand/i.test(c.name)) this._inPlace(c, hipsName);
     const find = (re) => clips.find((c) => re.test(c.name));
     this.clips = {
       walk: find(/walk/i) || clips[0],
@@ -122,6 +164,8 @@ export class Avatar {
       run: find(/run|sprint/i),
       jump: find(/jump/i),
       cheer: find(/cheer|victory|dance|wave/i),
+      swim: find(/^swim$/i),
+      tread: find(/^swimtread$/i),
     };
     if (this.clips.jump) this._clampJumpY(this.clips.jump, hipsName);
     this.hasLimbs = !!(this.bones.L.upLeg && this.bones.R.upLeg && this.bones.L.arm && this.bones.R.arm);
@@ -185,6 +229,8 @@ export class Avatar {
     this.act.run = c.run ? m.clipAction(c.run) : null;
     this.act.air = c.jump ? m.clipAction(c.jump) : hold('air_p', tLeap);
     this.act.cheer = c.cheer ? m.clipAction(c.cheer) : null;
+    this.act.swim = c.swim ? m.clipAction(c.swim) : null;
+    this.act.tread = c.tread ? m.clipAction(c.tread) : null;
     for (const k in this.act) if (this.act[k]) { this.act[k].play(); this.act[k].setEffectiveWeight(0); }
     this.act.idle.setEffectiveWeight(1);
     // capture idle pose for exaggeration
@@ -192,7 +238,8 @@ export class Avatar {
     this.idlePose = new Map();
     for (const b of this.bones.all) this.idlePose.set(b, b.quaternion.clone());
     this.realJump = !!c.jump;
-    this.w = { idle: 1, walk: 0, run: 0, air: 0, cheer: 0 };
+    this.w = { idle: 1, walk: 0, run: 0, air: 0, cheer: 0, swim: 0, tread: 0 };
+    this.swimLift = 0;
   }
   // rotate bone around an axis expressed in avatar-root space
   _rot(bone, axis, angle) {
@@ -217,11 +264,25 @@ export class Avatar {
   }
   _steadyHead() {
     const W = this.w || { idle: 1, walk: 0, run: 0, air: 0, cheer: 0 };
-    const w = Math.min(0.92, 0.92 * W.idle + 0.7 * (W.walk + W.run) + 0.55 * W.air + 0.4 * W.cheer);
+    const w = Math.min(0.92, 0.7 * (W.walk + W.run) + 0.55 * W.air + 0.4 * W.cheer);
     this._steady(this.bones.neck, this.headRest.neck, w * 0.6);
     this._steady(this.bones.head, this.headRest.head, w);
   }
+  // caminar/correr: gira cada pie sobre el eje de la pierna para que la punta apunte al frente
+  _feetForward(W) {
+    const rq = this.root.getWorldQuaternion(_ha).invert();
+    for (const [sd, sg, tw, tr] of [[this.bones.L, 1, WALK_TOE_L, RUN_TOE_L], [this.bones.R, -1, WALK_TOE_R, RUN_TOE_R]]) {
+      const a = (W.walk * tw + W.run * tr) * (1 - W.air);
+      if (!sd.leg || !sd.foot || a < 1e-3) continue;
+      const shin = sd.foot.getWorldPosition(new THREE.Vector3()).sub(sd.leg.getWorldPosition(new THREE.Vector3())).applyQuaternion(rq).normalize();
+      this._rot(sd.foot, shin, sg * a);
+    }
+  }
   update(dt, s) {
+    if (STATIC_POSE) {
+      for (const [b, r] of this.restPose) { b.quaternion.copy(r.q); b.position.copy(r.p); }
+      return;
+    }
     this.t += dt;
     const A = this.act;
     if (!A.walk) return;
@@ -235,6 +296,10 @@ export class Avatar {
     let wCheer = s.cheer ? 1 : 0;
     if (wAir > 0) { wIdle *= 0; wWalk *= 0; wRun *= 0; }
     if (wCheer > 0 && A.cheer) { wIdle = wWalk = wRun = wAir = 0; }
+    // en el agua: flotar quieto o nadar según la velocidad, si el modelo tiene esos clips
+    const inWater = s.swimming && A.swim && A.tread;
+    const wSwim = inWater ? smoothstep(0.25, 1.6, speed) : 0, wTread = inWater ? 1 - wSwim : 0;
+    if (inWater) { wIdle = wWalk = wRun = wAir = wCheer = 0; }
     const k = 12;
     const W = this.w;
     W.idle = damp(W.idle, wIdle, k, dt);
@@ -242,11 +307,19 @@ export class Avatar {
     W.run = damp(W.run, wRun, k, dt);
     W.air = damp(W.air, wAir, ground ? 14 : 18, dt);
     W.cheer = damp(W.cheer, A.cheer ? wCheer : 0, 8, dt);
+    W.swim = damp(W.swim, wSwim, 8, dt);
+    W.tread = damp(W.tread, wTread, 8, dt);
     A.idle.setEffectiveWeight(W.idle);
     A.walk.setEffectiveWeight(W.walk + (A.run ? 0 : 0));
     if (A.run) A.run.setEffectiveWeight(W.run);
     A.air.setEffectiveWeight(W.air);
     if (A.cheer) A.cheer.setEffectiveWeight(W.cheer);
+    if (A.swim) {
+      A.swim.setEffectiveWeight(W.swim);
+      A.tread.setEffectiveWeight(W.tread);
+      A.swim.timeScale = clamp(speed / 3.41, 0.7, 2) * 3.75; // brazada 3 veces más rápida que el ajuste anterior (1.25)
+    }
+    this.swimLift = W.swim * SWIM_LIFT; // al ir tendido, el cuerpo sube para dejar la cabeza fuera del agua
     // sync playback rates to ground speed (anti foot-sliding)
     const procRun = !A.run;
     if (procRun) {
@@ -255,18 +328,29 @@ export class Avatar {
       if (wIdle > 0.99) A.walk.timeScale = 1;
       A.walk.setEffectiveWeight(Math.max(W.walk, 1 - W.idle - W.air - W.cheer));
     } else {
-      A.walk.timeScale = clamp(speed / 1.35, 0.6, 1.6);
-      A.run.timeScale = clamp(speed / 5.6, 0.8, 1.7);
+      // avance real de cada clip a la escala del juego: Walk ~1,19 m/s, Run ~3,94 m/s
+      A.walk.timeScale = clamp(speed / 1.19, 0.6, 2.4);
+      A.run.timeScale = clamp(speed / 3.94, 0.8, 2.5);
     }
     if (this.realJump) {
       // play jump: rise portion, hold near apex, finish on landing
       const d = A.air.getClip().duration;
       if (!ground) {
-        if (!this._inAir) { A.air.reset(); A.air.time = d * 0.12; this._inAir = true; }
-        A.air.timeScale = A.air.time > d * 0.48 ? 0.05 : 1.1;
-      } else if (this._inAir) { this._inAir = false; A.air.time = Math.max(A.air.time, d * 0.62); A.air.timeScale = 1.6; }
+        if (!this._inAir) { A.air.reset(); A.air.time = d * JUMP_TAKEOFF; this._inAir = true; }
+        A.air.timeScale = A.air.time > d * JUMP_LAND ? 0 : JUMP_RATE;
+      } else if (this._inAir) { this._inAir = false; A.air.time = Math.max(A.air.time, d * JUMP_LAND); A.air.timeScale = 1.6; }
     }
     this.mixer.update(dt);
+    this._feetForward(W);
+    if (CLIPS_ONLY) return;
+    // standby: pose de reposo del esqueleto, sin animación (se desvanece al caminar con W.idle)
+    if (W.idle > 0.001) for (const [b, r] of this.restPose) { b.quaternion.slerp(r.q, W.idle); b.position.lerp(r.p, W.idle); }
+    // salto (referencia): en el aire, piernas, brazos y columna parten de la pose de reposo; encima se aplica la pose de vuelo
+    if (W.air > 0.001 && this.hasLimbs) {
+      for (const b of [...airBones(this.bones), ...this.spineChain]) { const r = this.restPose.get(b); if (r) b.quaternion.slerp(r.q, W.air); }
+    }
+    // correr: torso rígido (columna en su pose de reposo respecto a la cadera) para que el pecho no se deforme
+    if (W.run > 0.001) for (const b of this.spineChain) b.quaternion.slerp(this.restPose.get(b).q, W.run * (1 - W.air));
     // ---- procedural layers
     if (!this.hasLimbs) { this._steadyHead(); return; }
     const B = this.bones;
@@ -284,8 +368,82 @@ export class Avatar {
       this._rot(B.R.foreArm, X, -0.9 * runBlend);
     }
     // forward lean with speed / sprint
-    const lean = (0.04 + 0.16 * runBlend + (s.sprinting ? 0.08 : 0)) * (1 - W.air) + s.accelLean;
+    const lean = ((0.04 + 0.16 * runBlend) * (1 - W.air) + s.accelLean) * (1 - W.run);
     this._rot(B.spine || B.hips, X, lean);
+    // correr: el clip inclina desde la cadera (~50°). Se corrige ahí, con el torso rígido, y se contrarrotan las piernas
+    // para que su movimiento siga idéntico al del clip
+    if (W.run > 0.001 && B.hips && B.head) {
+      this.root.updateMatrixWorld(true);
+      const rq = this.root.getWorldQuaternion(_ha).invert();
+      const d = B.head.getWorldPosition(_v).sub(B.hips.getWorldPosition(new THREE.Vector3())).applyQuaternion(rq);
+      const dp = (Math.atan2(d.z, d.y) - RUN_TORSO_LEAN) * W.run * (1 - W.air);
+      this._rot(B.hips, X, -dp);
+      this._rot(B.L.upLeg, X, dp);
+      this._rot(B.R.upLeg, X, dp);
+    }
+    // caminar/correr: el brazo no pasa de ARM_MAX respecto al eje del torso (hacia adelante ni hacia atrás)
+    const wArm = (W.walk + W.run) * (1 - W.air);
+    if (wArm > 0.001 && B.hips && B.chest) {
+      for (const [sd, sg] of [[B.L, 1], [B.R, -1]]) {
+        if (!sd.arm || !sd.foreArm) continue;
+        this.root.updateMatrixWorld(true);
+        const rq = this.root.getWorldQuaternion(_ha).invert();
+        const pos = (b) => b.getWorldPosition(new THREE.Vector3()).applyQuaternion(rq);
+        let a = pos(sd.foreArm).sub(pos(sd.arm)).normalize();
+        const dn = pos(B.hips).sub(pos(B.chest)).normalize();
+        // piso lateral: en el plano frontal del torso el brazo no baja de ARM_MIN_SIDE hacia afuera (vuelve al eje de standby, nunca hacia adentro)
+        const out = new THREE.Vector3(sg, 0, 0).addScaledVector(dn, -sg * dn.x).normalize();
+        const side = Math.atan2(a.dot(out), a.dot(dn));
+        if (side < ARM_MIN_SIDE) {
+          this._rot(sd.arm, dn.clone().cross(out).normalize(), (ARM_MIN_SIDE - side) * wArm);
+          this.root.updateMatrixWorld(true);
+          a = pos(sd.foreArm).sub(pos(sd.arm)).normalize();
+        }
+        const ang = Math.acos(clamp(a.dot(dn), -1, 1));
+        if (ang > ARM_MAX) this._rot(sd.arm, a.clone().cross(dn).normalize(), (ang - ARM_MAX) * wArm);
+      }
+    }
+    // correr: la inclinación lateral del antebrazo (codo→mano) depende del balanceo del brazo: adelante al centro, en la columna y atrás hacia afuera
+    const wIn = W.run * (1 - W.air);
+    if (wIn > 0.001) {
+      this._hands ??= { L: B.all.find((b) => stripName(b.name) === 'lefthand'), R: B.all.find((b) => stripName(b.name) === 'righthand') };
+      for (const [sd, hand, sg] of [[B.L, this._hands.L, 1], [B.R, this._hands.R, -1]]) {
+        if (!sd.foreArm || !hand) continue;
+        this.root.updateMatrixWorld(true);
+        const rq = this.root.getWorldQuaternion(_ha).invert();
+        const pos = (b) => b.getWorldPosition(new THREE.Vector3()).applyQuaternion(rq);
+        const f = pos(hand).sub(pos(sd.foreArm)).normalize();
+        const axis = f.clone().cross(new THREE.Vector3(-sg, 0, 0));
+        if (axis.lengthSq() < 1e-8) continue;
+        const inward = Math.asin(clamp(-f.x * sg, -1, 1));
+        // balanceo adelante-atrás del brazo respecto a la columna (0 = alineado con el torso, + = adelante)
+        const dn = pos(B.hips).sub(pos(B.chest)).normalize();
+        const fw = new THREE.Vector3(0, 0, 1).addScaledVector(dn, -dn.z).normalize();
+        const u = pos(sd.foreArm).sub(pos(sd.arm)).normalize();
+        const swing = Math.atan2(u.dot(fw), u.dot(dn));
+        // adelante: hacia el centro; en la columna y hacia atrás: hacia afuera (la mano se aleja del cuerpo)
+        const t = clamp(swing / RUN_HAND_BLEND, 0, 1);
+        const target = -RUN_HAND_OUTWARD + (RUN_HAND_INWARD + RUN_HAND_OUTWARD) * t;
+        // se suaviza el objetivo para que el cambio afuera↔adentro no sea un salto de 1-2 frames
+        this._hT ??= {};
+        const hk = sd === B.L ? 'L' : 'R';
+        this._hT[hk] = this._hT[hk] === undefined ? target : damp(this._hT[hk], target, 10, dt);
+        this._rot(sd.foreArm, axis.normalize(), (this._hT[hk] - inward) * wIn);
+      }
+    }
+    // salto (referencia): vuelo con torso erguido, rodillas flexionadas ~50° y pies recogidos bajo la cadera,
+    // brazos abiertos ~45° del torso con codos ligeramente flexionados
+    if (W.air > 0.01 && this.hasLimbs) {
+      const a = W.air;
+      this._rot(B.L.upLeg, X, -AIR_THIGH * a);
+      this._rot(B.R.upLeg, X, -(AIR_THIGH - 0.1) * a);
+      this._rot(B.L.leg, X, AIR_KNEE * a);
+      this._rot(B.R.leg, X, (AIR_KNEE + 0.1) * a);
+      this._rot(B.L.arm, Z, AIR_ARM * a);
+      this._rot(B.R.arm, Z, -AIR_ARM * a);
+      this._rot(B.L.foreArm, X, -AIR_ELBOW * a);
+      this._rot(B.R.foreArm, X, -AIR_ELBOW * a);
+    }
     // air pose for the procedural jump: tuck legs, arms out
     if (!this.realJump && W.air > 0.01) {
       const up = s.vy > 0 ? 1 : 0.6;
@@ -296,15 +454,9 @@ export class Avatar {
       this._rot(B.L.arm, Z, 0.75 * W.air);
       this._rot(B.R.arm, Z, -0.75 * W.air);
     }
-    // idle breathing + look around
-    if (W.idle > 0.05 && W.cheer < 0.5 && !this.clips.idle) {
-      const br = Math.sin(this.t * 2.1) * 0.025 * W.idle;
-      this._rot(B.chest || B.spine, X, br);
-      this._rot(B.head, new THREE.Vector3(0, 1, 0), Math.sin(this.t * 0.45) * 0.22 * W.idle);
-      // relax arms down a bit from A-pose
-      this._rot(B.L.arm, Z, -0.18 * W.idle);
-      this._rot(B.R.arm, Z, 0.18 * W.idle);
-    }
+    // standby: brazos pegados al cuerpo (la pose de reposo es una A-pose con los brazos ~30° separados)
+    this._rot(B.L.arm, Z, -0.44 * W.idle);
+    this._rot(B.R.arm, Z, 0.44 * W.idle);
     // procedural cheer
     if (!A.cheer && s.cheer) {
       const c = 1;
@@ -321,6 +473,8 @@ export class Avatar {
   }
 }
 
+const SMOKE_TONES = [0x8f8a84, 0xa0917f, 0x7d6e5f, 0x6b5644]; // humo de sprint: grises y cafés
+
 // Simple dust particles
 class Dust {
   constructor(scene, tex) {
@@ -329,14 +483,28 @@ class Dust {
       const s = new THREE.Sprite(new THREE.SpriteMaterial({ map: tex, transparent: true, depthWrite: false, opacity: 0, color: 0xf7ecd2 }));
       s.visible = false;
       scene.add(s);
-      this.pool.push({ s, life: 0, v: new THREE.Vector3() });
+      this.pool.push({ s, life: 0, size: 1, alpha: 0.55, v: new THREE.Vector3() });
     }
     this.i = 0;
+  }
+  // bocanada de humo detrás del jugador; (dx,dz) es la dirección unitaria de su movimiento
+  puff(pos, dx, dz) {
+    const p = this.pool[this.i++ % this.pool.length];
+    p.life = 1;
+    p.size = 1;
+    p.alpha = 0.8;
+    p.s.visible = true;
+    p.s.material.color.setHex(SMOKE_TONES[Math.floor(Math.random() * SMOKE_TONES.length)]);
+    p.s.position.set(pos.x - dx * 0.35 + (Math.random() - 0.5) * 0.15, pos.y + 0.2, pos.z - dz * 0.35 + (Math.random() - 0.5) * 0.15);
+    p.v.set(-dx * 0.6 + (Math.random() - 0.5) * 0.3, 0.5 + Math.random() * 0.4, -dz * 0.6 + (Math.random() - 0.5) * 0.3);
   }
   emit(pos, n = 4, spread = 1.2, up = 1) {
     for (let k = 0; k < n; k++) {
       const p = this.pool[this.i++ % this.pool.length];
       p.life = 1;
+      p.size = 1;
+      p.alpha = 0.55;
+      p.s.material.color.setHex(0xf7ecd2);
       p.s.visible = true;
       p.s.position.set(pos.x + (Math.random() - 0.5) * 0.4, pos.y + 0.15, pos.z + (Math.random() - 0.5) * 0.4);
       p.v.set((Math.random() - 0.5) * spread, Math.random() * up, (Math.random() - 0.5) * spread);
@@ -347,8 +515,8 @@ class Dust {
       if (p.life <= 0) continue;
       p.life -= dt * 1.8;
       p.s.position.addScaledVector(p.v, dt);
-      p.s.scale.setScalar(0.4 + (1 - p.life) * 1.2);
-      p.s.material.opacity = Math.max(0, p.life) * 0.55;
+      p.s.scale.setScalar((0.4 + (1 - p.life) * 1.2) * p.size);
+      p.s.material.opacity = Math.max(0, p.life) * p.alpha;
       if (p.life <= 0) p.s.visible = false;
     }
   }
@@ -372,6 +540,7 @@ export class Player {
     this.landSquash = 0;
     this.cheer = 0;
     this.stepAcc = 0;
+    this.smokeAcc = 0;
     this.safe = this.pos.clone();
     this.groundKind = 'terrain';
     this.dust = new Dust(scene, dustTex);
@@ -383,7 +552,8 @@ export class Player {
     this.killY = -12;
   }
   groundAt(x, z, feetY) {
-    const th = this.indoor ? -Infinity : heightAt(x, z);
+    let th = this.indoor ? -Infinity : heightAt(x, z);
+    if (th < SWIM_Y && !this.indoor && canSwim(x, z)) th = SWIM_Y; // en el río se flota, no se hunde
     const sh = this.col.supportHeight(x, z, feetY, P.step, _list);
     if (sh > th) { this.groundKind = 'collider'; return sh; }
     this.groundKind = 'terrain';
@@ -403,8 +573,8 @@ export class Player {
     const mag = Math.min(1, Math.hypot(wx, wz));
     if (mag > 0.001) { const l = Math.hypot(wx, wz); wx /= l; wz /= l; }
     const analogWalk = mag < 0.55;
-    const sprint = input.sprint && !this.frozen;
-    const targetSpeed = mag < 0.05 ? 0 : (sprint ? P.sprint : (analogWalk ? P.walk + (P.run - P.walk) * smoothstep(0.25, 0.55, mag) : P.run));
+    const sprint = input.sprint && !this.frozen && !this.swimming;
+    const targetSpeed = (mag < 0.05 ? 0 : (sprint ? P.sprint : (analogWalk ? P.walk + (P.run - P.walk) * smoothstep(0.25, 0.55, mag) : P.run))) * (this.swimming ? P.swim * (input.sprint ? P.swimSprint : 1) : 1);
     // timers
     if (!this.frozen && input.consume('jump')) this.jumpBuf = 0.14;
     this.jumpBuf -= dt;
@@ -439,15 +609,16 @@ export class Player {
     const next = { x: nx, z: nz };
     // steep slope / deep water blocking (terrain only)
     const tNext = heightAt(nx, nz);
+    const blockedWater = tNext < -1.15 && !canSwim(nx, nz);
     const sl = slopeAt(nx, nz);
     const uphill = this.vel.x * sl.dx + this.vel.z * sl.dz > 0;
     const supNext = this.col.supportHeight(nx, nz, this.pos.y, P.step, _list);
     if (!this.indoor && supNext < tNext - 0.05) {
-      if ((sl.m > P.maxSlope && uphill && tNext > this.pos.y + 0.25) || tNext < -1.15) {
+      if ((sl.m > P.maxSlope && uphill && tNext > this.pos.y + 0.25) || blockedWater) {
         // project out the blocked component
         const gl = Math.hypot(sl.dx, sl.dz) || 1;
         let gx = sl.dx / gl, gz = sl.dz / gl;
-        if (tNext < -1.15) { // water: push back toward land
+        if (blockedWater) { // water: push back toward land
           const back = slopeAt(this.pos.x, this.pos.z);
           const bl = Math.hypot(back.dx, back.dz) || 1;
           gx = -back.dx / bl; gz = -back.dz / bl;
@@ -456,7 +627,7 @@ export class Player {
         if (dot > 0) { this.vel.x -= gx * dot; this.vel.z -= gz * dot; }
         next.x = this.pos.x + this.vel.x * dt;
         next.z = this.pos.z + this.vel.z * dt;
-        if (heightAt(next.x, next.z) < -1.15) { next.x = this.pos.x; next.z = this.pos.z; }
+        if (heightAt(next.x, next.z) < -1.15 && !canSwim(next.x, next.z)) { next.x = this.pos.x; next.z = this.pos.z; }
       }
     }
     // world bounds
@@ -529,14 +700,25 @@ export class Player {
       const stride = hs > 5 ? 1.55 : 1.0;
       if (this.stepAcc > stride) {
         this.stepAcc = 0;
-        this.audio && this.audio.play('step', clamp(hs / 9, 0.25, 0.8));
-        if (hs > 5.5) this.dust.emit(this.pos, 1, 0.8, 0.4);
+        if (!this.swimming) this.audio && this.audio.play('step', clamp(hs / 9, 0.25, 0.8));
+      }
+      // estela de humo solo en sprint
+      if (sprint && hs > 7) {
+        this.smokeAcc += hs * dt;
+        if (this.smokeAcc > 0.4) {
+          this.smokeAcc = 0;
+          this.dust.puff(this.pos, this.vel.x / hs, this.vel.z / hs);
+        }
       }
     }
     this.dust.update(dt);
     // avatar transform
     const root = this.avatar.root;
     root.position.copy(this.pos);
+    // nadando: flota con un leve vaivén
+    this.swimming = !this.indoor && this.grounded && this.pos.y <= SWIM_Y + 0.02 && heightAt(this.pos.x, this.pos.z) < SWIM_Y && canSwim(this.pos.x, this.pos.z);
+    if (this.swimming) root.position.y += Math.sin(performance.now() * 0.004) * 0.05;
+    root.position.y += this.avatar.swimLift || 0;
     root.rotation.y = this.yaw;
     this.landSquash = damp(this.landSquash, 0, 9, dt);
     const sq = this.landSquash;
@@ -544,7 +726,7 @@ export class Player {
     if (this.cheer > 0) this.cheer -= dt;
     this.speed = hs;
     this.avatar.update(dt, {
-      speed: this.frozen ? 0 : hs, grounded: this.grounded, vy: this.vel.y, sprinting: sprint && hs > 7,
+      speed: this.frozen ? 0 : hs, grounded: this.grounded, vy: this.vel.y, sprinting: sprint && hs > 7, swimming: this.swimming,
       cheer: this.cheer > 0, accelLean: this.accelLean,
     });
   }
